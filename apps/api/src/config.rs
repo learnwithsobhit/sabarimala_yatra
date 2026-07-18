@@ -54,7 +54,13 @@ impl Config {
         Ok(Self {
             database_url: std::env::var("DATABASE_URL").context("DATABASE_URL is required")?,
             jwt_secret,
-            bind_addr: std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into()),
+            bind_addr: std::env::var("PORT")
+                .ok()
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty())
+                .map(|p| format!("0.0.0.0:{p}"))
+                .or_else(|| std::env::var("BIND_ADDR").ok())
+                .unwrap_or_else(|| "0.0.0.0:8080".into()),
             dev_auth,
             dev_otp_code: std::env::var("DEV_OTP_CODE").unwrap_or_else(|_| "123456".into()),
             sms_webhook_url,

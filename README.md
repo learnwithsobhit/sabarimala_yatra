@@ -111,9 +111,12 @@ See [docs/nfr-checklist.md](docs/nfr-checklist.md), [docs/fcm-setup.md](docs/fcm
 
 **Min Android SDK:** API 26+.
 
-## Deploy (Railway)
+## Deploy
 
-See `apps/api/Dockerfile` and `infra/railway.toml`.
+- **API → Railway:** see [docs/deploy-railway.md](docs/deploy-railway.md). Key points: set the service **Root Directory to `apps/api`** (Dockerfile build context), use a **pgvector-capable Postgres** (the knowledge-embeddings migration runs `CREATE EXTENSION vector`), and set **`BIND_ADDR=0.0.0.0:$PORT`** (the app reads `BIND_ADDR`, not `PORT`).
+- **Web → Firebase Hosting:** see [docs/deploy-web-firebase.md](docs/deploy-web-firebase.md). Project `swamy-sharanam`, live at https://swamy-sharanam.web.app. Deploy with `API_BASE=https://YOUR_RAILWAY_HOST scripts/deploy_web.sh` (FCM push is disabled on web).
+
+### Railway env (Docker via `apps/api/Dockerfile` + `infra/railway.toml`)
 
 Production env (required):
 
