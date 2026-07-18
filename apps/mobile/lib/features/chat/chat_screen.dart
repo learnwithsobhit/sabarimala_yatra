@@ -198,12 +198,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
     if (!started && mounted) {
       setState(() => _listening = false);
+      final err = _voice.lastListenError ?? '';
+      final message = (err == 'not-allowed' || err == 'service-not-allowed')
+          ? 'Microphone permission is blocked. Click the lock icon in the address bar, allow microphone, then try again.'
+          : 'Could not start voice input. Allow the microphone for this site, or type your question.';
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Voice input is not available in this browser. Allow the microphone, or type your question.',
-          ),
-        ),
+        SnackBar(content: Text(message)),
       );
     }
   }

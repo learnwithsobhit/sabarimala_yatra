@@ -6,6 +6,8 @@ import 'package:speech_to_text/speech_to_text.dart';
 
 import 'voice_browser_support_stub.dart'
     if (dart.library.html) 'voice_browser_support_web.dart';
+import 'voice_web_stt_stub.dart'
+    if (dart.library.html) 'voice_web_stt_web.dart';
 
 /// Languages the Ask Guide voice feature targets. Actual availability is
 /// resolved per-platform at runtime (see [VoiceService]).
@@ -30,18 +32,18 @@ enum VoiceLang {
 }
 
 /// Cross-platform wrapper around [SpeechToText] (mic input) and [FlutterTts]
-/// (spoken answers). Keeps all platform branching in one place so widgets can
-/// stay thin. Works on Android, iOS and (best-effort) web; when a platform or
-/// browser lacks speech support, [sttSupported] is false and callers should
-/// hide the mic.
+/// (spoken answers). On web, falls back to a direct Web Speech API path when
+/// the speech_to_text plugin fails to initialize (seen on Firebase Hosting).
 class VoiceService {
   final SpeechToText _speech = SpeechToText();
   final FlutterTts _tts = FlutterTts();
+  final WebSpeechStt _webStt = WebSpeechStt();
 
   bool _initialized = false;
   bool _sttPluginReady = false;
   bool _browserSpeech = false;
   bool _speaking = false;
+  String? lastListenError;
 
   List<String> _sttLocaleIds = const [];
   List<String> _ttsLanguages = const [];
@@ -50,15 +52,13 @@ class VoiceService {
 
   bool get initialized => _initialized;
 
-  /// Whether the mic should be offered. On web this prefers a direct browser
-  /// feature detect, because the plugin's [initialize] can return false even
-  /// when Chrome exposes `webkitSpeechRecognition`.
+  /// Whether the mic should be offered.
   bool get sttSupported => _sttPluginReady || _browserSpeech;
 
   /// Whether text-to-speech reported at least one usable language.
   bool get ttsSupported => _ttsLanguages.isNotEmpty || kIsWeb;
 
-  bool get isListening => _speech.isListening;
+  bool get isListening => _speech.isListening || _webStt.isListening;
 
   bool get isSpeaking => _speaking;
 
@@ -74,8 +74,7 @@ class VoiceService {
 
     await _ensureSttPlugin();
 
-    // TTS must not block mic visibility. Cap the wait so a hung voice
-    // enumeration cannot keep the UI in a "no mic" state forever.
+    // TTS must not block mic visibility.
     try {
       await _initTts().timeout(const Duration(seconds: 3));
     } catch (_) {
@@ -136,8 +135,6 @@ class VoiceService {
   List<VoiceLang> availableInputLangs() {
     if (!sttSupported) return const [];
     if (_sttLocaleIds.isEmpty) {
-      // Some platforms (notably web) don't enumerate locales; assume the
-      // browser/OS default handles at least English.
       return const [VoiceLang.english];
     }
     return VoiceLang.values
@@ -170,8 +167,8 @@ class VoiceService {
 
   String _normalize(String tag) => tag.toLowerCase().replaceAll('_', '-');
 
-  /// Starts listening. [onResult] streams partial and final transcripts;
-  /// [onDone] fires when the engine stops (silence, timeout, or error).
+  /// Starts listening. Prefer the plugin; on web fall back to a direct
+  /// Web Speech API session when the plugin failed to initialize.
   /// Returns false if speech recognition could not be started.
   Future<bool> listen({
     required VoiceLang lang,
@@ -179,37 +176,65 @@ class VoiceService {
     void Function()? onDone,
     void Function(double level)? onLevel,
   }) async {
+    lastListenError = null;
     await _ensureSttPlugin();
-    if (!_sttPluginReady) {
-      onDone?.call();
-      return false;
-    }
     _onListenDone = onDone;
-    try {
-      await _speech.listen(
-        onResult: (r) => onResult(r.recognizedWords, r.finalResult),
-        onSoundLevelChange: onLevel,
-        listenOptions: SpeechListenOptions(
-          partialResults: true,
-          cancelOnError: true,
-          localeId: _matchLocaleId(lang) ?? lang.sttLocaleId,
-          listenFor: const Duration(seconds: 30),
-          pauseFor: const Duration(seconds: 4),
-        ),
-      );
-      return true;
-    } catch (_) {
-      onDone?.call();
-      return false;
+
+    if (_sttPluginReady) {
+      try {
+        await _speech.listen(
+          onResult: (r) => onResult(r.recognizedWords, r.finalResult),
+          onSoundLevelChange: onLevel,
+          listenOptions: SpeechListenOptions(
+            partialResults: true,
+            cancelOnError: true,
+            localeId: _matchLocaleId(lang) ?? lang.sttLocaleId,
+            listenFor: const Duration(seconds: 30),
+            pauseFor: const Duration(seconds: 4),
+          ),
+        );
+        return true;
+      } catch (e) {
+        lastListenError = e.toString();
+        // Fall through to the web path when available.
+      }
     }
+
+    if (_browserSpeech) {
+      final started = _webStt.start(
+        localeId: lang.ttsLanguage,
+        onResult: onResult,
+        onDone: onDone,
+        onError: (error) => lastListenError = error,
+      );
+      if (!started) {
+        lastListenError ??= 'web_start_failed';
+        onDone?.call();
+      }
+      return started;
+    }
+
+    lastListenError ??= 'not_supported';
+    onDone?.call();
+    return false;
   }
 
   Future<void> stopListening() async {
-    if (_speech.isListening) await _speech.stop();
+    if (_webStt.isListening) {
+      _webStt.stop();
+    }
+    if (_speech.isListening) {
+      await _speech.stop();
+    }
   }
 
   Future<void> cancel() async {
-    if (_speech.isListening) await _speech.cancel();
+    if (_webStt.isListening) {
+      _webStt.abort();
+    }
+    if (_speech.isListening) {
+      await _speech.cancel();
+    }
   }
 
   /// Speaks [text] in [lang]. Silently no-ops if the language is unavailable.
