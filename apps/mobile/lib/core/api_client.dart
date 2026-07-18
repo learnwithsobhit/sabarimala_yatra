@@ -119,6 +119,38 @@ class ApiClient {
     }
   }
 
+  /// Raw binary PUT used for direct uploads. `target` may be an absolute URL
+  /// (S3 presigned) or an API-relative path (local dev blob endpoint). For S3
+  /// we deliberately omit the Authorization header so it does not interfere
+  /// with the presigned query signature.
+  Future<void> putBinary(
+    String target, {
+    required List<int> bytes,
+    required String contentType,
+    Map<String, String> signedHeaders = const {},
+  }) async {
+    final isAbsolute = target.startsWith('http');
+    final uri = isAbsolute ? Uri.parse(target) : Uri.parse('$baseUrl$target');
+    // Every signed header (e.g. x-amz-tagging) must be echoed verbatim or S3
+    // rejects the signature.
+    final headers = <String, String>{...signedHeaders};
+    headers['Content-Type'] = contentType;
+    if (!isAbsolute && token != null) {
+      headers['Authorization'] = 'Bearer $token';
+    }
+    try {
+      final res = await http
+          .put(uri, headers: headers, body: bytes)
+          .timeout(const Duration(minutes: 3));
+      if (res.statusCode >= 400) {
+        throw ApiException('Upload failed (${res.statusCode})', res.statusCode);
+      }
+    } catch (e) {
+      if (e is ApiException) rethrow;
+      throw ApiException('Upload failed. Check your connection and try again.', 0);
+    }
+  }
+
   Future<dynamic> get(String path) async {
     try {
       final res = await http

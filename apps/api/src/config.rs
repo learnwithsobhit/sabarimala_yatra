@@ -2,6 +2,10 @@ use anyhow::{bail, Context, Result};
 
 const DEFAULT_JWT_SECRET: &str = "dev-change-me-swamy-sharanam-2026";
 
+fn env_opt(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|v| !v.trim().is_empty())
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub database_url: String,
@@ -13,6 +17,15 @@ pub struct Config {
     pub sms_webhook_token: Option<String>,
     pub openai_api_key: Option<String>,
     pub upload_dir: String,
+    /// "local" (default) or "s3".
+    pub media_backend: String,
+    pub s3_bucket: Option<String>,
+    pub s3_endpoint: Option<String>,
+    pub aws_region: Option<String>,
+    pub aws_access_key_id: Option<String>,
+    pub aws_secret_access_key: Option<String>,
+    /// Public read base for media (CloudFront domain or S3 URL), no trailing slash.
+    pub media_public_base_url: Option<String>,
 }
 
 impl Config {
@@ -50,6 +63,17 @@ impl Config {
                 .filter(|value| !value.trim().is_empty()),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok().filter(|s| !s.is_empty()),
             upload_dir: std::env::var("UPLOAD_DIR").unwrap_or_else(|_| "./uploads".into()),
+            media_backend: std::env::var("MEDIA_BACKEND")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "local".into()),
+            s3_bucket: env_opt("S3_BUCKET"),
+            s3_endpoint: env_opt("S3_ENDPOINT"),
+            aws_region: env_opt("AWS_REGION"),
+            aws_access_key_id: env_opt("AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key: env_opt("AWS_SECRET_ACCESS_KEY"),
+            // Prefer an explicit CloudFront/CDN base; fall back to S3_PUBLIC_URL.
+            media_public_base_url: env_opt("MEDIA_PUBLIC_BASE_URL").or_else(|| env_opt("S3_PUBLIC_URL")),
         })
     }
 }

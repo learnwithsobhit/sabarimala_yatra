@@ -3,10 +3,12 @@ mod config;
 mod error;
 mod llm;
 mod media_sign;
+mod media_store;
 mod models;
 mod push;
 mod rate_limit;
 mod routes;
+mod s3_presign;
 mod state;
 
 use std::net::SocketAddr;
@@ -22,6 +24,9 @@ use crate::state::AppState;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
+    // Prefer monorepo/.env values over empty exports from the shell.
+    let _ = dotenvy::from_filename_override(".env");
+    let _ = dotenvy::from_filename_override("../../.env");
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()

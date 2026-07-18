@@ -5,6 +5,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../core/theme.dart';
 import '../../core/widgets/widgets.dart';
 import '../../providers/auth_provider.dart';
+import 'video_view_screen.dart';
 
 class MemoriesScreen extends ConsumerStatefulWidget {
   const MemoriesScreen({super.key});
@@ -65,13 +66,79 @@ class _MemoriesScreenState extends ConsumerState<MemoriesScreen>
     }
   }
 
-  Future<void> _pickAndUpload() async {
-    final picker = ImagePicker();
-    final file = await picker.pickImage(
-      source: ImageSource.gallery,
-      imageQuality: 75,
-      maxWidth: 1920,
+  String _contentTypeFor(XFile file, bool video) {
+    final mime = file.mimeType;
+    if (mime != null && (mime.startsWith('image/') || mime.startsWith('video/'))) {
+      return mime;
+    }
+    final name = file.name.toLowerCase();
+    final ext = name.contains('.') ? name.split('.').last : '';
+    switch (ext) {
+      case 'png':
+        return 'image/png';
+      case 'webp':
+        return 'image/webp';
+      case 'gif':
+        return 'image/gif';
+      case 'heic':
+      case 'heif':
+        return 'image/heic';
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'mp4':
+        return 'video/mp4';
+      case 'mov':
+        return 'video/quicktime';
+      case 'mkv':
+        return 'video/x-matroska';
+      case 'webm':
+        return 'video/webm';
+      case '3gp':
+        return 'video/3gpp';
+      default:
+        return video ? 'video/mp4' : 'image/jpeg';
+    }
+  }
+
+  Future<void> _chooseSource() async {
+    final choice = await showModalBottomSheet<bool>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_outlined),
+              title: const Text('Photo'),
+              onTap: () => Navigator.pop(ctx, false),
+            ),
+            ListTile(
+              leading: const Icon(Icons.videocam_outlined),
+              title: const Text('Video'),
+              subtitle: const Text('Up to 3 minutes'),
+              onTap: () => Navigator.pop(ctx, true),
+            ),
+          ],
+        ),
+      ),
     );
+    if (choice == null) return;
+    await _pickAndUpload(video: choice);
+  }
+
+  Future<void> _pickAndUpload({required bool video}) async {
+    final picker = ImagePicker();
+    final XFile? file = video
+        ? await picker.pickVideo(
+            source: ImageSource.gallery,
+            maxDuration: const Duration(minutes: 3),
+          )
+        : await picker.pickImage(
+            source: ImageSource.gallery,
+            imageQuality: 80,
+            maxWidth: 1920,
+          );
     if (file == null) return;
     if (!mounted) return;
 
@@ -79,7 +146,7 @@ class _MemoriesScreenState extends ConsumerState<MemoriesScreen>
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Share memory'),
+        title: Text(video ? 'Share video' : 'Share memory'),
         content: TextField(
           controller: captionCtrl,
           decoration: const InputDecoration(
@@ -100,16 +167,38 @@ class _MemoriesScreenState extends ConsumerState<MemoriesScreen>
     setState(() => _uploading = true);
     try {
       final bytes = await file.readAsBytes();
+      final contentType = _contentTypeFor(file, video);
       final api = ref.read(apiClientProvider);
-      final res = await api.uploadMultipart(
-        '/media',
-        fileField: 'file',
+
+      // 1. Ask the API for an upload target (S3 presigned or local blob URL).
+      final presign = await api.post('/media/presign', body: {
+        'content_type': contentType,
+      });
+      final uploadUrl = presign['upload_url']?.toString() ?? '';
+      final key = presign['key']?.toString() ?? '';
+      final rawHeaders = presign['headers'];
+      final signedHeaders = <String, String>{};
+      if (rawHeaders is Map) {
+        rawHeaders.forEach((k, v) => signedHeaders[k.toString()] = v.toString());
+      }
+      final putContentType = signedHeaders['Content-Type'] ?? contentType;
+
+      // 2. Upload the bytes directly to storage, echoing every signed header.
+      await api.putBinary(
+        uploadUrl,
         bytes: bytes,
-        filename: file.name,
-        fields: {
-          if (caption.isNotEmpty) 'caption': caption,
-        },
+        contentType: putContentType,
+        signedHeaders: signedHeaders,
       );
+
+      // 3. Persist the media row.
+      final res = await api.post('/media/confirm', body: {
+        'key': key,
+        'content_type': contentType,
+        'byte_size': bytes.length,
+        if (caption.isNotEmpty) 'caption': caption,
+      });
+
       await _load();
       if (mounted) {
         final approved = res['approved'] == true;
@@ -153,6 +242,28 @@ class _MemoriesScreenState extends ConsumerState<MemoriesScreen>
     }
   }
 
+  Widget _videoThumb(Map<String, dynamic> m) {
+    return InkWell(
+      onTap: () => Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => VideoViewScreen(
+            url: _url(m),
+            caption: m['caption']?.toString(),
+          ),
+        ),
+      ),
+      child: Container(
+        color: Colors.black87,
+        alignment: Alignment.center,
+        child: const Icon(
+          Icons.play_circle_outline,
+          color: Colors.white,
+          size: 48,
+        ),
+      ),
+    );
+  }
+
   Widget _grid(List<dynamic> items, {bool moderate = false}) {
     final c = context.sharanam;
     if (items.isEmpty) {
@@ -173,6 +284,7 @@ class _MemoriesScreenState extends ConsumerState<MemoriesScreen>
       itemCount: items.length,
       itemBuilder: (context, i) {
         final m = Map<String, dynamic>.from(items[i] as Map);
+        final isVideo = m['is_video'] == true;
         return SectionCard(
           margin: EdgeInsets.zero,
           padding: EdgeInsets.zero,
@@ -183,12 +295,15 @@ class _MemoriesScreenState extends ConsumerState<MemoriesScreen>
                 child: ClipRRect(
                   borderRadius:
                       const BorderRadius.vertical(top: Radius.circular(16)),
-                  child: Image.network(
-                    _url(m),
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) =>
-                        const Center(child: Icon(Icons.broken_image_outlined)),
-                  ),
+                  child: isVideo
+                      ? _videoThumb(m)
+                      : Image.network(
+                          _url(m),
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => const Center(
+                            child: Icon(Icons.broken_image_outlined),
+                          ),
+                        ),
                 ),
               ),
               Padding(
@@ -249,7 +364,7 @@ class _MemoriesScreenState extends ConsumerState<MemoriesScreen>
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _uploading ? null : _pickAndUpload,
+        onPressed: _uploading ? null : _chooseSource,
         icon: _uploading
             ? const SizedBox(
                 width: 18,
@@ -257,7 +372,7 @@ class _MemoriesScreenState extends ConsumerState<MemoriesScreen>
                 child: CircularProgressIndicator(strokeWidth: 2),
               )
             : const Icon(Icons.add_a_photo_outlined),
-        label: Text(_uploading ? 'Uploading…' : 'Add photo'),
+        label: Text(_uploading ? 'Uploading…' : 'Add memory'),
       ),
       body: Column(
         children: [

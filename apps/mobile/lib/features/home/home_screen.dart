@@ -9,6 +9,7 @@ import '../../core/trip_pack_store.dart';
 import '../../core/widgets/feature_tile.dart';
 import '../../core/widgets/pass_card.dart';
 import '../../core/widgets/status_banner.dart';
+import '../../l10n/app_localizations.dart';
 import '../../providers/auth_provider.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -136,6 +137,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final c = context.sharanam;
+    final l10n = AppLocalizations.of(context);
     final auth = ref.watch(authProvider);
     final openCountId = _now?['open_count_session_id'];
     final next = _now?['next_stop'] as Map<String, dynamic>?;
@@ -209,7 +211,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     else
                       Semantics(
                         button: true,
-                        label: 'I am Present',
+                        label: l10n.iAmPresent,
                         child: FilledButton.icon(
                           style: FilledButton.styleFrom(
                             backgroundColor: c.success,
@@ -225,7 +227,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                             Icons.check_circle_outline,
                             size: 26,
                           ),
-                          label: const Text('I am Present'),
+                          label: Text(l10n.iAmPresent),
                         ),
                       ),
                     const SizedBox(height: 8),

@@ -98,7 +98,9 @@ async fn embeddings(api_key: &str, input: &[String]) -> Result<Vec<Vec<f32>>> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    dotenvy::dotenv().ok();
+    // Override empty shell exports so local .env keys always win for ingest.
+    let _ = dotenvy::from_filename_override(".env");
+    let _ = dotenvy::from_filename_override("../../.env");
     let args = std::env::args().collect::<Vec<_>>();
     if args.len() < 2 {
         bail!("usage: cargo run --bin ingest_pdf -- <file.pdf> [trip_uuid]");

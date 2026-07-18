@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_animate/flutter_animate.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+
+import 'l10n/app_localizations.dart';
 
 import 'core/theme.dart';
 import 'features/announcements/broadcast_screen.dart';
@@ -137,6 +141,11 @@ class SwamySharanamApp extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final router = ref.watch(goRouterProvider);
 
+    // NFR-A: honor the OS "reduce motion" setting for our flutter_animate usage.
+    if (MediaQuery.maybeDisableAnimationsOf(context) ?? false) {
+      Animate.defaultDuration = Duration.zero;
+    }
+
     return MaterialApp.router(
       title: 'Swamy Sharanam',
       theme: buildSharanamTheme(),
@@ -144,6 +153,13 @@ class SwamySharanamApp extends ConsumerWidget {
       themeMode: ThemeMode.system,
       routerConfig: router,
       debugShowCheckedModeBanner: false,
+      localizationsDelegates: const [
+        AppLocalizations.delegate,
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: AppLocalizations.supportedLocales,
     );
   }
 }

@@ -24,6 +24,28 @@ class PassCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.sharanam;
 
+    return Semantics(
+      container: true,
+      label: _semanticSummary(),
+      child: ExcludeSemantics(child: _buildCard(context, c)),
+    );
+  }
+
+  String _semanticSummary() {
+    final parts = <String>['Digital yatra pass for $memberName'];
+    if (role != null) parts.add('role $role');
+    if (nextStopTitle != null) {
+      parts.add(
+        'next stop $nextStopTitle${nextStopPlace != null ? ' at $nextStopPlace' : ''}',
+      );
+    }
+    for (final row in rows) {
+      parts.add('${row.label} ${row.value}');
+    }
+    return parts.join(', ');
+  }
+
+  Widget _buildCard(BuildContext context, SharanamColors c) {
     return Container(
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(22),

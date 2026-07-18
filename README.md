@@ -59,7 +59,7 @@ On a physical device, use your machine LAN IP for `API_BASE`.
 - **Roster** — Member list + CSV import (leader)
 - **Food distribution** — Start meal session; members tap Received; helpers tick pending (train/bus)
 - **Packing checklist** — PDF packing items with personal progress
-- **Memories** — Photo gallery; Swamy uploads need approval; leader/volunteer auto-approved
+- **Memories** — Photo + video gallery; Swamy uploads need approval; leader/volunteer auto-approved. Uploads go direct to S3/CloudFront in prod (see [docs/media-s3-setup.md](docs/media-s3-setup.md))
 - **Day notes / Mala / Feedback** — Phase 2 group notes, mala-removal reminders, lessons for next year
 - **Roster → not traveling today** — excludes member from expected count headcount
 - **If you are lost** — Rendezvous tips + SOS broadcast + call helpers (also on Home)
@@ -93,6 +93,8 @@ See [docs/apk-sideload.md](docs/apk-sideload.md) and `scripts/build_apk.sh`.
 | GET/POST | `/roster` | List / CSV import (leader) |
 | GET/POST | `/expenses` | Ledger + balances |
 | POST | `/chat/ask` | Grounded FAQ over trip docs |
+| GET | `/media`, `/media/mine`, `/media/pending` | Gallery / my uploads / moderation |
+| POST | `/media/presign` → `/media/confirm` | Direct photo/video upload (S3 or local) |
 | POST | `/auth/refresh` | Rotate access token |
 | GET/POST | `/notes` | Day group notes |
 | GET/POST | `/mala-reminders` | Mala removal reminders |
@@ -122,7 +124,8 @@ Production env (required):
 | `DEV_AUTH` | `0` (API refuses default JWT secret when this is off) |
 | `SMS_WEBHOOK_URL` | HTTPS OTP delivery adapter; see [docs/otp-webhook.md](docs/otp-webhook.md) |
 | `SMS_WEBHOOK_TOKEN` | Long random bearer token for the adapter |
-| `UPLOAD_DIR` | `/data/uploads` (or volume path) |
+| `UPLOAD_DIR` | `/data/uploads` (or volume path; used when `MEDIA_BACKEND=local`) |
+| `MEDIA_BACKEND` | `s3` for prod media; needs `S3_BUCKET`, `AWS_*`, `MEDIA_PUBLIC_BASE_URL`/`S3_PUBLIC_URL` — see [docs/media-s3-setup.md](docs/media-s3-setup.md) |
 | FCM vars | See [docs/fcm-setup.md](docs/fcm-setup.md) |
 
 Release APK (HTTPS API only):
