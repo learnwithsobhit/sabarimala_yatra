@@ -45,9 +45,7 @@ class _PackingScreenState extends ConsumerState<PackingScreen> {
         _offline = false;
         _loading = false;
       });
-      final pack = await TripPackStore().load() ?? {};
-      pack['packing'] = res;
-      await TripPackStore().save(pack);
+      await TripPackStore().save({'packing': res});
     } catch (_) {
       final pack = await TripPackStore().load();
       final cached = pack?['packing'] as Map<String, dynamic>?;

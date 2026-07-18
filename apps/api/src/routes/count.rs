@@ -1,7 +1,12 @@
+use axum::body::Body;
 use axum::extract::{Path, State};
+use axum::http::{header, StatusCode};
+use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
 use uuid::Uuid;
 
 use crate::auth::AuthUserExt;
@@ -45,10 +50,12 @@ pub struct StopCountBody {
 pub struct CountBoard {
     pub session: CountSession,
     pub present_count: i64,
+    pub excused_count: i64,
     pub expected_count: i32,
     pub present: Vec<BoardMember>,
     pub not_yet: Vec<BoardMember>,
     pub missing: Vec<BoardMember>,
+    pub excused: Vec<BoardMember>,
     pub my_status: Option<CountMarkStatus>,
 }
 
@@ -58,6 +65,21 @@ pub struct BoardMember {
     pub display_name: String,
     pub phone_e164: String,
     pub status: Option<CountMarkStatus>,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+pub struct CountHistoryItem {
+    pub id: Uuid,
+    pub checkpoint_label: String,
+    pub scope_kind: CountScopeKind,
+    pub status: CountSessionStatus,
+    pub expected_count: i32,
+    pub present_count: i64,
+    pub excused_count: i64,
+    pub missing_count: i64,
+    pub started_at: DateTime<Utc>,
+    pub closed_at: Option<DateTime<Utc>>,
+    pub ready_to_march_note: Option<String>,
 }
 
 async fn start_count(
@@ -101,12 +123,42 @@ async fn start_count(
         ));
     }
 
+    // Exclude members marked not_traveling for today (Asia/Kolkata calendar day).
+    let today = chrono::Utc::now()
+        .with_timezone(&chrono::FixedOffset::east_opt(5 * 3600 + 1800).unwrap())
+        .date_naive();
+
+    if matches!(scope_kind, CountScopeKind::Bus) {
+        let vehicle_ok: Option<(Uuid,)> = sqlx::query_as(
+            "SELECT id FROM vehicles WHERE id = $1 AND trip_id = $2",
+        )
+        .bind(body.scope_vehicle_id)
+        .bind(user.trip_id)
+        .fetch_optional(&state.db)
+        .await?;
+        if vehicle_ok.is_none() {
+            return Err(ApiError::BadRequest(
+                "scope_vehicle_id is not a vehicle on this trip".into(),
+            ));
+        }
+    }
+
     let expected: (i64,) = match scope_kind {
         CountScopeKind::All => {
             sqlx::query_as(
-                "SELECT COUNT(*) FROM trip_members WHERE trip_id = $1 AND is_active",
+                r#"
+                SELECT COUNT(*) FROM trip_members tm
+                WHERE tm.trip_id = $1 AND tm.is_active
+                  AND NOT EXISTS (
+                    SELECT 1 FROM trip_member_day_status ds
+                    WHERE ds.member_id = tm.id
+                      AND ds.day_date = $2
+                      AND ds.status = 'not_traveling'
+                  )
+                "#,
             )
             .bind(user.trip_id)
+            .bind(today)
             .fetch_one(&state.db)
             .await?
         }
@@ -117,10 +169,17 @@ async fn start_count(
                 FROM trip_members tm
                 JOIN assignments a ON a.member_id = tm.id
                 WHERE tm.trip_id = $1 AND tm.is_active AND a.vehicle_id = $2
+                  AND NOT EXISTS (
+                    SELECT 1 FROM trip_member_day_status ds
+                    WHERE ds.member_id = tm.id
+                      AND ds.day_date = $3
+                      AND ds.status = 'not_traveling'
+                  )
                 "#,
             )
             .bind(user.trip_id)
             .bind(body.scope_vehicle_id)
+            .bind(today)
             .fetch_one(&state.db)
             .await?
         }
@@ -211,6 +270,32 @@ async fn open_session(
     Ok(Json(session))
 }
 
+async fn history(
+    State(state): State<AppState>,
+    AuthUserExt(user): AuthUserExt,
+) -> ApiResult<Json<Vec<CountHistoryItem>>> {
+    let rows: Vec<CountHistoryItem> = sqlx::query_as(
+        r#"
+        SELECT cs.id, cs.checkpoint_label, cs.scope_kind, cs.status,
+               cs.expected_count, cs.started_at, cs.closed_at,
+               cs.ready_to_march_note,
+               COUNT(cm.id) FILTER (WHERE cm.status = 'present') AS present_count,
+               COUNT(cm.id) FILTER (WHERE cm.status = 'excused') AS excused_count,
+               COUNT(cm.id) FILTER (WHERE cm.status = 'missing') AS missing_count
+        FROM count_sessions cs
+        LEFT JOIN count_marks cm ON cm.session_id = cs.id
+        WHERE cs.trip_id = $1
+        GROUP BY cs.id
+        ORDER BY cs.started_at DESC
+        LIMIT 50
+        "#,
+    )
+    .bind(user.trip_id)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(rows))
+}
+
 async fn board(
     State(state): State<AppState>,
     AuthUserExt(user): AuthUserExt,
@@ -277,6 +362,7 @@ async fn board(
     let mut present = Vec::new();
     let mut not_yet = Vec::new();
     let mut missing = Vec::new();
+    let mut excused = Vec::new();
     let mut my_status = None;
 
     for m in members {
@@ -292,25 +378,106 @@ async fn board(
         };
         match status {
             Some(CountMarkStatus::Present) => present.push(row),
-            Some(CountMarkStatus::Missing) | Some(CountMarkStatus::Excused) => {
-                missing.push(row)
-            }
+            Some(CountMarkStatus::Missing) => missing.push(row),
+            Some(CountMarkStatus::Excused) => excused.push(row),
             None => not_yet.push(row),
         }
     }
 
     let present_count = present.len() as i64;
+    let excused_count = excused.len() as i64;
     let expected_count = session.expected_count;
 
     Ok(Json(CountBoard {
         session,
         present_count,
+        excused_count,
         expected_count,
         present,
         not_yet,
         missing,
+        excused,
         my_status,
     }))
+}
+
+async fn export_csv(
+    State(state): State<AppState>,
+    AuthUserExt(user): AuthUserExt,
+    Path(session_id): Path<Uuid>,
+) -> ApiResult<Response> {
+    require_helper(&user)?;
+
+    let session: Option<(String,)> = sqlx::query_as(
+        "SELECT checkpoint_label FROM count_sessions WHERE id = $1 AND trip_id = $2",
+    )
+    .bind(session_id)
+    .bind(user.trip_id)
+    .fetch_optional(&state.db)
+    .await?;
+    let Some((checkpoint,)) = session else {
+        return Err(ApiError::NotFound("Count session not found".into()));
+    };
+
+    let rows: Vec<(String, String, Option<CountMarkStatus>, Option<DateTime<Utc>>)> =
+        sqlx::query_as(
+            r#"
+            SELECT u.display_name, u.phone_e164, cm.status, cm.marked_at
+            FROM trip_members tm
+            JOIN users u ON u.id = tm.user_id
+            JOIN count_sessions cs ON cs.id = $1 AND cs.trip_id = tm.trip_id
+            LEFT JOIN count_marks cm
+              ON cm.member_id = tm.id AND cm.session_id = $1
+            WHERE tm.trip_id = $2
+              AND tm.is_active
+              AND (
+                cs.scope_kind = 'all'
+                OR EXISTS (
+                    SELECT 1 FROM assignments a
+                    WHERE a.member_id = tm.id AND a.vehicle_id = cs.scope_vehicle_id
+                )
+              )
+            ORDER BY u.display_name
+            "#,
+        )
+        .bind(session_id)
+        .bind(user.trip_id)
+        .fetch_all(&state.db)
+        .await?;
+
+    let mut writer = csv::Writer::from_writer(Vec::new());
+    writer
+        .write_record(["name", "phone", "status", "marked_at"])
+        .map_err(|e| ApiError::Internal(e.into()))?;
+    for (name, phone, status, marked_at) in rows {
+        writer
+            .write_record([
+                name,
+                phone,
+                status
+                    .map(|s| format!("{s:?}").to_ascii_lowercase())
+                    .unwrap_or_else(|| "not_yet".into()),
+                marked_at.map(|t| t.to_rfc3339()).unwrap_or_default(),
+            ])
+            .map_err(|e| ApiError::Internal(e.into()))?;
+    }
+    let bytes = writer
+        .into_inner()
+        .map_err(|e| ApiError::Internal(e.into_error().into()))?;
+    let safe_name: String = checkpoint
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/csv; charset=utf-8")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"count_{safe_name}.csv\""),
+        )
+        .body(Body::from(bytes))
+        .map_err(|e| ApiError::Internal(e.into()))
 }
 
 async fn mark_self_present(
@@ -414,6 +581,23 @@ async fn helper_mark(
     .execute(&state.db)
     .await?;
 
+    sqlx::query(
+        r#"
+        INSERT INTO audit_events
+            (trip_id, actor_member_id, action, entity_type, entity_id, payload_json)
+        VALUES ($1, $2, 'count.mark', 'count_session', $3, $4)
+        "#,
+    )
+    .bind(user.trip_id)
+    .bind(user.member_id)
+    .bind(session_id)
+    .bind(serde_json::json!({
+        "member_id": body.member_id,
+        "status": body.status,
+    }))
+    .execute(&state.db)
+    .await?;
+
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -452,17 +636,17 @@ async fn stop_count(
         return Err(ApiError::Conflict("Session already closed".into()));
     }
 
-    let present: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM count_marks WHERE session_id = $1 AND status = 'present'",
+    let accounted: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM count_marks WHERE session_id = $1 AND status IN ('present', 'excused')",
     )
     .bind(session_id)
     .fetch_one(&state.db)
     .await?;
 
-    if !body.force && present.0 < session.expected_count as i64 {
+    if !body.force && accounted.0 < session.expected_count as i64 {
         return Err(ApiError::Conflict(format!(
             "Present {}/{} — set force=true to stop anyway with a note",
-            present.0, session.expected_count
+            accounted.0, session.expected_count
         )));
     }
 
@@ -487,6 +671,18 @@ async fn stop_count(
     let note = body
         .ready_to_march_note
         .unwrap_or_else(|| "All clear — ready to march.".into());
+    let present: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM count_marks WHERE session_id = $1 AND status = 'present'",
+    )
+    .bind(session_id)
+    .fetch_one(&state.db)
+    .await?;
+    let excused: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM count_marks WHERE session_id = $1 AND status = 'excused'",
+    )
+    .bind(session_id)
+    .fetch_one(&state.db)
+    .await?;
 
     sqlx::query(
         r#"
@@ -501,8 +697,8 @@ async fn stop_count(
         closed.checkpoint_label
     ))
     .bind(format!(
-        "Present {}/{}. {note}",
-        present.0, closed.expected_count
+        "Present {}, excused {} / expected {}. {note}",
+        present.0, excused.0, closed.expected_count
     ))
     .bind(session_id)
     .execute(&state.db)
@@ -510,8 +706,8 @@ async fn stop_count(
 
     let close_title = format!("Count closed — {}", closed.checkpoint_label);
     let close_body = format!(
-        "Present {}/{}. {note}",
-        present.0, closed.expected_count
+        "Present {}, excused {} / expected {}. {note}",
+        present.0, excused.0, closed.expected_count
     );
     push::notify_trip(
         &state.db,
@@ -527,14 +723,35 @@ async fn stop_count(
     )
     .await;
 
+    sqlx::query(
+        r#"
+        INSERT INTO audit_events
+            (trip_id, actor_member_id, action, entity_type, entity_id, payload_json)
+        VALUES ($1, $2, 'count.stop', 'count_session', $3, $4)
+        "#,
+    )
+    .bind(user.trip_id)
+    .bind(user.member_id)
+    .bind(session_id)
+    .bind(serde_json::json!({
+        "present": present.0,
+        "excused": excused.0,
+        "expected": closed.expected_count,
+        "forced": body.force,
+    }))
+    .execute(&state.db)
+    .await?;
+
     Ok(Json(closed))
 }
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/count/sessions/open", get(open_session))
+        .route("/count/sessions/history", get(history))
         .route("/count/sessions", post(start_count))
         .route("/count/sessions/{session_id}/board", get(board))
+        .route("/count/sessions/{session_id}/export.csv", get(export_csv))
         .route(
             "/count/sessions/{session_id}/present",
             post(mark_self_present),

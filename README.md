@@ -60,13 +60,19 @@ On a physical device, use your machine LAN IP for `API_BASE`.
 - **Food distribution** — Start meal session; members tap Received; helpers tick pending (train/bus)
 - **Packing checklist** — PDF packing items with personal progress
 - **Memories** — Photo gallery; Swamy uploads need approval; leader/volunteer auto-approved
+- **Day notes / Mala / Feedback** — Phase 2 group notes, mala-removal reminders, lessons for next year
+- **Roster → not traveling today** — excludes member from expected count headcount
 - **If you are lost** — Rendezvous tips + SOS broadcast + call helpers (also on Home)
 - Home cloud icon downloads an **offline trip pack** (itinerary + pass + announcements)
 - **Count → I am Present** works offline (queues and syncs later)
 
 ## Chatbot
 
-Uses trip knowledge chunks. Set `OPENAI_API_KEY` for GPT-4o-mini grounded answers; otherwise extractive fallback.
+Uses trip knowledge chunks (+ PDF ingest via `cargo run --bin ingest_pdf`). Set `OPENAI_API_KEY` for embeddings + grounded LLM answers (`LLM_BACKEND=openai` or `qwen`); otherwise extractive fallback. Offline FAQ chips work without network.
+
+## Auth
+
+Roster OTP → short-lived **access JWT** (2h) + **refresh token** (30d, rotated). Production requires `SMS_WEBHOOK_URL` when `DEV_AUTH=0`.
 
 ## Push (FCM)
 
@@ -87,6 +93,21 @@ See [docs/apk-sideload.md](docs/apk-sideload.md) and `scripts/build_apk.sh`.
 | GET/POST | `/roster` | List / CSV import (leader) |
 | GET/POST | `/expenses` | Ledger + balances |
 | POST | `/chat/ask` | Grounded FAQ over trip docs |
+| POST | `/auth/refresh` | Rotate access token |
+| GET/POST | `/notes` | Day group notes |
+| GET/POST | `/mala-reminders` | Mala removal reminders |
+| GET/POST | `/feedback` | Post-trip lessons |
+| POST | `/day-status` | Not traveling today |
+| GET | `/trips` | Multi-year archive for member |
+| POST | `/trips/:id/duplicate` | Clone itinerary for next season |
+| POST | `/admin/knowledge/upload` | PDF/text knowledge CMS |
+| POST | `/registration/interest` | Next-year registration interest |
+
+## NFR / dry-run
+
+See [docs/nfr-checklist.md](docs/nfr-checklist.md), [docs/fcm-setup.md](docs/fcm-setup.md), [docs/otp-webhook.md](docs/otp-webhook.md), [docs/pdf-ingestion.md](docs/pdf-ingestion.md).
+
+**Min Android SDK:** API 26+.
 
 ## Deploy (Railway)
 
@@ -99,6 +120,8 @@ Production env (required):
 | `DATABASE_URL` | Railway Postgres URL |
 | `JWT_SECRET` | Long random string (≠ default) |
 | `DEV_AUTH` | `0` (API refuses default JWT secret when this is off) |
+| `SMS_WEBHOOK_URL` | HTTPS OTP delivery adapter; see [docs/otp-webhook.md](docs/otp-webhook.md) |
+| `SMS_WEBHOOK_TOKEN` | Long random bearer token for the adapter |
 | `UPLOAD_DIR` | `/data/uploads` (or volume path) |
 | FCM vars | See [docs/fcm-setup.md](docs/fcm-setup.md) |
 

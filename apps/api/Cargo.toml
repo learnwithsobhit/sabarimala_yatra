@@ -3,6 +3,7 @@ name = "swamy_sharanam_api"
 version = "0.1.0"
 edition = "2021"
 description = "Swamy Sharanam — Sabarimala yatra companion API (greenfield)"
+default-run = "swamy_sharanam_api"
 
 [dependencies]
 axum = { version = "0.8", features = ["macros", "multipart"] }
@@ -28,6 +29,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 hmac = "0.13.0"
 sha2 = "0.11.0"
 hex = "0.4.3"
+pdf-extract = "0.12.0"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

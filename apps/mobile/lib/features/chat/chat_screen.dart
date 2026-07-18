@@ -1,5 +1,8 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/theme.dart';
 import '../../core/widgets/widgets.dart';
@@ -13,15 +16,116 @@ class ChatScreen extends ConsumerStatefulWidget {
 }
 
 class _ChatScreenState extends ConsumerState<ChatScreen> {
+  static const _cacheKey = 'yatra_guide_messages_v1';
   final _controller = TextEditingController();
   final _messages = <_Msg>[];
   bool _busy = false;
 
   final _chips = const [
     'Lost at Pamba?',
+    'Lost at Sannidhanam?',
+    'Outbound train 16315',
     'Return train number',
     'When is mala removal?',
+    'Today’s schedule',
+    'Packing checklist',
+    'Guruvayur Seeveli',
+    'Nilakkal to Pampa',
+    'Emergency contacts',
   ];
+
+  static const _offlineFaqs = <String, ({String answer, String section})>{
+    'Lost at Pamba?': (
+      answer:
+          'Going up: wait near the start of the steps at Pamba Ganapathy, just before Virtual Q / Aadhaar check. Returning: wait near the Indian Oil petrol bunk. Network is often BSNL-only.',
+      section: 'What to do if you are lost',
+    ),
+    'Lost at Sannidhanam?': (
+      answer:
+          'Wait in front of the Holy 18 Steps if you are below the main temple, or near the Melshanthi room if you are on top. Tell a volunteer; do not wander alone.',
+      section: 'What to do if you are lost',
+    ),
+    'Outbound train 16315': (
+      answer:
+          'Outbound train is 16315 KOCHUVELI EXP, depart ~16:35 on 15 Aug; arrive Thrissur ~02:50 on 16 Aug.',
+      section: '15th August',
+    ),
+    'Return train number': (
+      answer:
+          'Return train is 16316 KCVL MYS EXP from Cherthala (~19:40 on 19 Aug) arriving Bengaluru SBC (~08:25 on 20 Aug).',
+      section: '19th August',
+    ),
+    'When is mala removal?': (
+      answer:
+          'Mala should be removed at the same place it was worn after returning. Plan includes mala removal on 20 Aug after reaching Bengaluru (Ravindra’s House), unless you wore it at a temple near home.',
+      section: '20th August',
+    ),
+    'Today’s schedule': (
+      answer:
+          'Open the Plan tab for today’s stops. Key days: 15 Aug assemble & train; 16 Thrissur/Guruvayur; 17 Pampa climb; 18 abhishekam & descend; 19 Chengannur circuit & return train; 20 Bengaluru mala removal.',
+      section: 'Itinerary overview',
+    ),
+    'Packing checklist': (
+      answer:
+          'Carry ID, black clothes, shawl, torch, medicines, water bottle, and irumudi items as listed in the packing checklist in More → Packing. Do not store Aadhaar photos in the app.',
+      section: 'Packing',
+    ),
+    'Guruvayur Seeveli': (
+      answer:
+          'Guruvayur Seeveli is on the Thrissur/Guruvayur day (16 Aug). Stay with your bus group; rendezvous at the temple gate if separated.',
+      section: '16th August',
+    ),
+    'Nilakkal to Pampa': (
+      answer:
+          'From Nilakkal, buses/trek continue toward Pampa before the climb. Keep your count Present marks before each departure. Network may drop — download the trip pack on Wi‑Fi first.',
+      section: '17th August',
+    ),
+    'Emergency contacts': (
+      answer:
+          'Use Home SOS / If lost for rendezvous points. Call your bus volunteer or leader from the roster. Prefer the PDF lost-person points over wandering.',
+      section: 'Safety',
+    ),
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCachedMessages();
+  }
+
+  Future<void> _loadCachedMessages() async {
+    final prefs = await SharedPreferences.getInstance();
+    final encoded = prefs.getString(_cacheKey);
+    if (encoded == null || !mounted) return;
+    try {
+      final raw = jsonDecode(encoded) as List<dynamic>;
+      setState(() {
+        if (_messages.isNotEmpty) return;
+        _messages
+          ..clear()
+          ..addAll(
+            raw.map(
+              (item) => _Msg.fromJson(
+                Map<String, dynamic>.from(item as Map),
+              ),
+            ),
+          );
+      });
+    } catch (_) {
+      await prefs.remove(_cacheKey);
+    }
+  }
+
+  Future<void> _saveCachedMessages() async {
+    final prefs = await SharedPreferences.getInstance();
+    final recent = _messages.length <= 40
+        ? _messages
+        : _messages.sublist(_messages.length - 40);
+    await prefs.setString(
+      _cacheKey,
+      jsonEncode(recent.map((message) => message.toJson()).toList()),
+    );
+  }
 
   @override
   void dispose() {
@@ -53,13 +157,30 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           citations: citations,
         ));
       });
+      await _saveCachedMessages();
     } catch (_) {
+      final offline = _offlineFaqs[q.trim()];
       if (!mounted) return;
-      setState(() => _messages.add(_Msg(
-            'Could not reach the guide. Try again when online, or ask a leader.',
-            false,
-            grounded: false,
-          )));
+      if (offline != null) {
+        setState(() => _messages.add(_Msg(
+              offline.answer,
+              false,
+              grounded: true,
+              citations: [
+                {
+                  'source_title': 'Shabarimala2026_Aug15-20.pdf',
+                  'source_section': offline.section,
+                },
+              ],
+            )));
+      } else {
+        setState(() => _messages.add(_Msg(
+              'Could not reach the guide. Try a chip above offline, or ask a leader when online.',
+              false,
+              grounded: false,
+            )));
+      }
+      await _saveCachedMessages();
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -239,4 +360,20 @@ class _Msg {
   final bool mine;
   final bool grounded;
   final List<Map<String, dynamic>> citations;
+
+  factory _Msg.fromJson(Map<String, dynamic> json) => _Msg(
+        json['text']?.toString() ?? '',
+        json['mine'] == true,
+        grounded: json['grounded'] == true,
+        citations: ((json['citations'] as List?) ?? [])
+            .map((item) => Map<String, dynamic>.from(item as Map))
+            .toList(),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'text': text,
+        'mine': mine,
+        'grounded': grounded,
+        'citations': citations,
+      };
 }

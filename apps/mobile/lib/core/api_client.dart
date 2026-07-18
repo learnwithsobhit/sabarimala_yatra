@@ -13,8 +13,11 @@ class ApiClient {
   final String baseUrl;
   String? token;
 
-  /// Called on HTTP 401 so the app can clear session and send user to login.
+  /// Called on HTTP 401 after a failed refresh attempt.
   Future<void> Function()? onUnauthorized;
+
+  /// Attempt to rotate access token; return true if a new token was stored.
+  Future<bool> Function()? refreshAccessToken;
 
   Map<String, String> get _headers => {
         'Content-Type': 'application/json',
@@ -24,6 +27,7 @@ class ApiClient {
   Future<Map<String, dynamic>> post(
     String path, {
     Map<String, dynamic>? body,
+    bool skipAuthRefresh = false,
   }) async {
     try {
       final res = await http
@@ -33,7 +37,20 @@ class ApiClient {
             body: jsonEncode(body ?? {}),
           )
           .timeout(const Duration(seconds: 8));
-      return _decode(res) as Map<String, dynamic>;
+      if (res.statusCode == 401 && !skipAuthRefresh) {
+        final refreshed = await _tryRefresh();
+        if (refreshed) {
+          final retry = await http
+              .post(
+                Uri.parse('$baseUrl$path'),
+                headers: _headers,
+                body: jsonEncode(body ?? {}),
+              )
+              .timeout(const Duration(seconds: 8));
+          return _decode(retry, skipAuthRefresh: true) as Map<String, dynamic>;
+        }
+      }
+      return _decode(res, skipAuthRefresh: skipAuthRefresh) as Map<String, dynamic>;
     } catch (e) {
       if (e is ApiException) rethrow;
       throw ApiException(
@@ -41,6 +58,12 @@ class ApiClient {
         0,
       );
     }
+  }
+
+  Future<bool> _tryRefresh() async {
+    final fn = refreshAccessToken;
+    if (fn == null) return false;
+    return fn();
   }
 
   Future<Map<String, dynamic>> put(
@@ -111,13 +134,30 @@ class ApiClient {
     }
   }
 
-  dynamic _decode(http.Response res) {
+  Future<String> getText(String path) async {
+    try {
+      final res = await http
+          .get(Uri.parse('$baseUrl$path'), headers: _headers)
+          .timeout(const Duration(seconds: 8));
+      if (res.statusCode >= 400) {
+        _decode(res);
+      }
+      return res.body;
+    } catch (e) {
+      if (e is ApiException) rethrow;
+      throw ApiException(
+        'Cannot reach the server. Check your connection and try again.',
+        0,
+      );
+    }
+  }
+
+  dynamic _decode(http.Response res, {bool skipAuthRefresh = false}) {
     final body = res.body.isEmpty ? {} : jsonDecode(res.body);
     if (res.statusCode >= 400) {
-      if (res.statusCode == 401) {
+      if (res.statusCode == 401 && !skipAuthRefresh) {
         final cb = onUnauthorized;
         if (cb != null) {
-          // Fire-and-forget; logout notifies listeners.
           Future.microtask(cb);
         }
       }

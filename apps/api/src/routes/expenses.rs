@@ -1,5 +1,5 @@
 use axum::extract::State;
-use axum::routing::{get, post};
+use axum::routing::get;
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -139,6 +139,23 @@ async fn create_expense(
         .execute(&mut *tx)
         .await?;
     }
+    sqlx::query(
+        r#"
+        INSERT INTO audit_events
+            (trip_id, actor_member_id, action, entity_type, entity_id, payload_json)
+        VALUES ($1, $2, 'expense.create', 'expense', $3, $4)
+        "#,
+    )
+    .bind(user.trip_id)
+    .bind(user.member_id)
+    .bind(expense_id)
+    .bind(serde_json::json!({
+        "amount_paise": amount_paise,
+        "member_count": member_ids.len(),
+        "category": body.category,
+    }))
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
 
     let row: ExpenseRow = sqlx::query_as(

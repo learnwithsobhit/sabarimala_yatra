@@ -3,9 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:uuid/uuid.dart';
-
-import '../../core/present_queue.dart';
+import '../../core/present_sync.dart';
 import '../../core/theme.dart';
 import '../../core/widgets/empty_state.dart';
 import '../../core/widgets/progress_ring.dart';
@@ -25,9 +23,9 @@ class _CountScreenState extends ConsumerState<CountScreen> {
   String? _error;
   bool _busy = false;
   bool _localPresent = false;
+  bool _offline = false;
   final _checkpoint = TextEditingController(text: 'Departure checkpoint');
-  final _queue = PresentQueue();
-  final _uuid = const Uuid();
+  final _present = PresentSync();
   int _tab = 1; // default Not yet
 
   @override
@@ -42,46 +40,48 @@ class _CountScreenState extends ConsumerState<CountScreen> {
     super.dispose();
   }
 
-  Future<void> _flushQueue() async {
-    final api = ref.read(apiClientProvider);
-    await _queue.flush((sessionId, clientId) async {
-      await api.post(
-        '/count/sessions/$sessionId/present',
-        body: {'client_id': clientId},
-      );
-    });
-  }
-
   Future<void> _refresh() async {
     setState(() => _error = null);
     try {
-      await _flushQueue();
       final api = ref.read(apiClientProvider);
+      await _present.flush(api);
       final open = await api.get('/count/sessions/open');
       if (!mounted) return;
       if (open == null) {
+        await _present.cacheOpenSession(null);
         setState(() {
           _session = null;
           _board = null;
           _localPresent = false;
+          _offline = false;
         });
         return;
       }
       final session = Map<String, dynamic>.from(open as Map);
       final board = await api.get('/count/sessions/${session['id']}/board')
           as Map<String, dynamic>;
+      await _present.cacheOpenSession(session);
       if (!mounted) return;
       setState(() {
         _session = session;
         _board = board;
         _localPresent = board['my_status'] == 'present';
+        _offline = false;
       });
     } catch (_) {
+      final cached = await _present.cachedOpenSession();
+      final queued = cached == null
+          ? false
+          : await _present.isQueued(cached['id'].toString());
       if (!mounted) return;
-      setState(
-        () => _error =
-            'Network issue — if you tapped Present offline, it is queued to sync.',
-      );
+      setState(() {
+        _session = cached;
+        _offline = cached != null;
+        _localPresent = queued || _localPresent;
+        _error = cached == null
+            ? 'Network issue — open Count once online so Present works offline.'
+            : 'Offline — you can still mark Present; it will sync when connected.';
+      });
     }
   }
 
@@ -102,44 +102,37 @@ class _CountScreenState extends ConsumerState<CountScreen> {
     }
   }
 
-  Future<void> _present() async {
+  Future<void> _markPresent() async {
     if (_session == null) return;
     final sessionId = _session!['id'].toString();
-    final clientId = _uuid.v4();
     setState(() {
       _busy = true;
       _localPresent = true;
       _error = null;
     });
     HapticFeedback.mediumImpact();
-    try {
-      final api = ref.read(apiClientProvider);
-      await api.post(
-        '/count/sessions/$sessionId/present',
-        body: {'client_id': clientId},
-      );
-      await _queue.remove(sessionId);
-      await _refresh();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Marked Present. Swamiye Sharanam.')),
-        );
-      }
-    } catch (_) {
-      await _queue.enqueue(sessionId: sessionId, clientId: clientId);
-      if (!mounted) return;
+    final api = ref.read(apiClientProvider);
+    final result = await _present.markPresent(api, sessionId: sessionId);
+    if (!mounted) return;
+    if (result.queued) {
       setState(() {
         _error =
             'No network — marked Present locally. Will sync when you are back online.';
+        _busy = false;
       });
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Queued offline. Will sync when connected.'),
         ),
       );
-    } finally {
-      if (mounted) setState(() => _busy = false);
+      return;
     }
+    await _refresh();
+    if (!mounted) return;
+    setState(() => _busy = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Marked Present. Swamiye Sharanam.')),
+    );
   }
 
   Future<void> _stop({required bool force}) async {
@@ -188,6 +181,104 @@ class _CountScreenState extends ConsumerState<CountScreen> {
     await _refresh();
   }
 
+  Future<void> _showHistory(bool helper) async {
+    try {
+      final api = ref.read(apiClientProvider);
+      final raw = await api.get('/count/sessions/history') as List<dynamic>;
+      if (!mounted) return;
+      final history =
+          raw.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+      await showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        builder: (ctx) => SafeArea(
+          child: SizedBox(
+            height: MediaQuery.sizeOf(ctx).height * .72,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 12, 8),
+                  child: Row(
+                    children: [
+                      Text(
+                        'Count history',
+                        style: Theme.of(ctx).textTheme.titleLarge,
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        onPressed: () => Navigator.pop(ctx),
+                        icon: const Icon(Icons.close),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: history.isEmpty
+                      ? const EmptyState(
+                          icon: Icons.history,
+                          message: 'No count sessions yet',
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.all(12),
+                          itemCount: history.length,
+                          itemBuilder: (context, i) {
+                            final h = history[i];
+                            final present =
+                                (h['present_count'] as num?)?.toInt() ?? 0;
+                            final excused =
+                                (h['excused_count'] as num?)?.toInt() ?? 0;
+                            final expected =
+                                (h['expected_count'] as num?)?.toInt() ?? 0;
+                            return Card(
+                              margin: const EdgeInsets.only(bottom: 8),
+                              child: ListTile(
+                                leading: const Icon(Icons.fact_check_outlined),
+                                title: Text(
+                                  h['checkpoint_label']?.toString() ?? '',
+                                ),
+                                subtitle: Text(
+                                  'Present $present · Excused $excused · Expected $expected',
+                                ),
+                                trailing: helper
+                                    ? IconButton(
+                                        tooltip: 'Copy paper roster CSV',
+                                        icon: const Icon(Icons.download_outlined),
+                                        onPressed: () async {
+                                          final csv = await api.getText(
+                                            '/count/sessions/${h['id']}/export.csv',
+                                          );
+                                          await Clipboard.setData(
+                                            ClipboardData(text: csv),
+                                          );
+                                          if (ctx.mounted) {
+                                            ScaffoldMessenger.of(ctx)
+                                                .showSnackBar(
+                                              const SnackBar(
+                                                content: Text(
+                                                  'Roster CSV copied — paste into Sheets or a file.',
+                                                ),
+                                              ),
+                                            );
+                                          }
+                                        },
+                                      )
+                                    : null,
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _error = 'Could not load count history.');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -196,6 +287,7 @@ class _CountScreenState extends ConsumerState<CountScreen> {
     final present = (_board?['present_count'] as num?)?.toInt() ?? 0;
     final expected = (_board?['expected_count'] as num?)?.toInt() ?? 0;
     final missing = ((_board?['missing'] as List?) ?? []).length;
+    final excused = ((_board?['excused'] as List?) ?? []).length;
     final notYet = ((_board?['not_yet'] as List?) ?? []).length;
     final myStatus =
         _localPresent ? 'present' : _board?['my_status']?.toString();
@@ -204,6 +296,11 @@ class _CountScreenState extends ConsumerState<CountScreen> {
       appBar: AppBar(
         title: const Text('Head Count'),
         actions: [
+          IconButton(
+            tooltip: 'Count history',
+            onPressed: () => _showHistory(auth.isLeaderOrVolunteer),
+            icon: const Icon(Icons.history),
+          ),
           IconButton(onPressed: _refresh, icon: const Icon(Icons.refresh)),
         ],
       ),
@@ -211,7 +308,12 @@ class _CountScreenState extends ConsumerState<CountScreen> {
         padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
         children: [
           if (_error != null) ...[
-            StatusBanner(kind: StatusBannerKind.danger, message: _error!),
+            StatusBanner(
+              kind: _offline
+                  ? StatusBannerKind.info
+                  : StatusBannerKind.danger,
+              message: _error!,
+            ),
             const SizedBox(height: 12),
           ],
           if (_session == null) ...[
@@ -267,7 +369,7 @@ class _CountScreenState extends ConsumerState<CountScreen> {
                       fontWeight: FontWeight.w700,
                     ),
                   ),
-                  onPressed: _busy ? null : _present,
+                  onPressed: _busy ? null : _markPresent,
                   icon: const Icon(Icons.check_circle_outline, size: 28),
                   label: const Text('I am Present'),
                 ),
@@ -290,14 +392,19 @@ class _CountScreenState extends ConsumerState<CountScreen> {
               ),
             ],
             const SizedBox(height: 20),
-            SegmentedButton<int>(
-              segments: [
-                ButtonSegment(value: 0, label: Text('Present $present')),
-                ButtonSegment(value: 1, label: Text('Not yet $notYet')),
-                ButtonSegment(value: 2, label: Text('Missing $missing')),
-              ],
-              selected: {_tab},
-              onSelectionChanged: (s) => setState(() => _tab = s.first),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: SegmentedButton<int>(
+                showSelectedIcon: false,
+                segments: [
+                  ButtonSegment(value: 0, label: Text('Present $present')),
+                  ButtonSegment(value: 1, label: Text('Not yet $notYet')),
+                  ButtonSegment(value: 2, label: Text('Missing $missing')),
+                  ButtonSegment(value: 3, label: Text('Excused $excused')),
+                ],
+                selected: {_tab},
+                onSelectionChanged: (s) => setState(() => _tab = s.first),
+              ),
             ),
             const SizedBox(height: 12),
             ..._listForTab(auth.isLeaderOrVolunteer),
@@ -314,11 +421,13 @@ class _CountScreenState extends ConsumerState<CountScreen> {
     final key = switch (_tab) {
       0 => 'present',
       2 => 'missing',
+      3 => 'excused',
       _ => 'not_yet',
     };
     final (statusColor, statusIcon) = switch (_tab) {
       0 => (c.success, Icons.check_circle),
       2 => (c.danger, Icons.person_off),
+      3 => (c.gold, Icons.event_busy_outlined),
       _ => (theme.colorScheme.onSurface.withValues(alpha: .45), Icons.schedule),
     };
     final list = (_board![key] as List?) ?? [];
@@ -329,6 +438,7 @@ class _CountScreenState extends ConsumerState<CountScreen> {
           message: switch (_tab) {
             0 => 'No one marked Present yet',
             2 => 'No one is missing',
+            3 => 'No one is excused',
             _ => 'Everyone is accounted for',
           },
         ),
@@ -381,6 +491,13 @@ class _CountScreenState extends ConsumerState<CountScreen> {
                   onPressed: () =>
                       _helperMark(m['member_id'].toString(), 'missing'),
                   icon: Icon(Icons.person_off_outlined, color: c.danger),
+                ),
+              if (helper && (_tab == 1 || _tab == 2))
+                IconButton(
+                  tooltip: 'Mark excused',
+                  onPressed: () =>
+                      _helperMark(m['member_id'].toString(), 'excused'),
+                  icon: Icon(Icons.event_busy_outlined, color: c.gold),
                 ),
             ],
           ),

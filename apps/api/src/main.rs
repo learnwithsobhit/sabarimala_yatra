@@ -1,9 +1,11 @@
 mod auth;
 mod config;
 mod error;
+mod llm;
 mod media_sign;
 mod models;
 mod push;
+mod rate_limit;
 mod routes;
 mod state;
 

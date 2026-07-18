@@ -48,6 +48,7 @@ async fn create(
     Json(body): Json<CreateAnnouncement>,
 ) -> ApiResult<Json<Announcement>> {
     require_helper(&user)?;
+    state.rate_limit.check_member_announce(user.member_id)?;
     let priority = body.priority.unwrap_or(AnnouncementPriority::Info);
     let row = insert_announcement(
         &state,
@@ -125,6 +126,26 @@ async fn insert_announcement(
         high,
     )
     .await;
+
+    if let Err(error) = sqlx::query(
+        r#"
+        INSERT INTO audit_events
+            (trip_id, actor_member_id, action, entity_type, entity_id, payload_json)
+        VALUES ($1, $2, 'announcement.create', 'announcement', $3, $4)
+        "#,
+    )
+    .bind(trip_id)
+    .bind(author_id)
+    .bind(row.id)
+    .bind(serde_json::json!({
+        "title": title,
+        "priority": priority,
+    }))
+    .execute(&state.db)
+    .await
+    {
+        tracing::error!(%error, announcement_id = %row.id, "failed to write announcement audit");
+    }
 
     Ok(row)
 }

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/theme.dart';
@@ -53,6 +54,37 @@ class _RosterScreenState extends ConsumerState<RosterScreen> {
         _error = 'Could not load roster. Check network and try again.';
         _loading = false;
       });
+    }
+  }
+
+  Future<void> _markNotTraveling(Map<String, dynamic> m) async {
+    final auth = ref.read(authProvider);
+    if (!auth.isLeaderOrVolunteer) return;
+    final id = m['id']?.toString() ?? m['member_id']?.toString();
+    if (id == null) return;
+    try {
+      final api = ref.read(apiClientProvider);
+      final day = DateFormat('yyyy-MM-dd').format(DateTime.now());
+      await api.post('/day-status', body: {
+        'member_id': id,
+        'day_date': day,
+        'status': 'not_traveling',
+        'note': 'Marked not traveling today',
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '${m['display_name']} marked not traveling today — excluded from expected count',
+            ),
+          ),
+        );
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(
+        () => _error = 'Could not update day status. Try again when online.',
+      );
     }
   }
 
@@ -127,11 +159,22 @@ class _RosterScreenState extends ConsumerState<RosterScreen> {
                       ),
                     ),
                   ),
-                  trailing: IconButton(
-                    icon: Icon(Icons.call, color: c.success),
-                    onPressed: phone.isEmpty
-                        ? null
-                        : () => launchUrl(Uri.parse('tel:$phone')),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (ref.watch(authProvider).isLeaderOrVolunteer)
+                        IconButton(
+                          tooltip: 'Not traveling today',
+                          icon: Icon(Icons.event_busy, color: c.danger),
+                          onPressed: () => _markNotTraveling(m),
+                        ),
+                      IconButton(
+                        icon: Icon(Icons.call, color: c.success),
+                        onPressed: phone.isEmpty
+                            ? null
+                            : () => launchUrl(Uri.parse('tel:$phone')),
+                      ),
+                    ],
                   ),
                 );
               }),

@@ -1,0 +1,10 @@
+{
+  "@@locale": "en",
+  "appTitle": "Swamy Sharanam",
+  "iAmPresent": "I am Present",
+  "countOpen": "Count open — mark Present",
+  "readyToMarch": "Ready to march",
+  "lostHelp": "If you are lost",
+  "downloadTripPack": "Download trip pack",
+  "offlinePending": "No network — marked locally, will sync"
+}

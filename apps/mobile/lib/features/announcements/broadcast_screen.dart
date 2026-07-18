@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/trip_pack_store.dart';
 import '../../core/widgets/widgets.dart';
 import '../../providers/auth_provider.dart';
 
@@ -16,6 +17,7 @@ class _BroadcastScreenState extends ConsumerState<BroadcastScreen> {
   String? _error;
   bool _urgent = false;
   bool _loading = true;
+  bool _offline = false;
   final _title = TextEditingController();
   final _body = TextEditingController();
   bool _sending = false;
@@ -41,17 +43,30 @@ class _BroadcastScreenState extends ConsumerState<BroadcastScreen> {
     try {
       final api = ref.read(apiClientProvider);
       final items = await api.get('/announcements') as List<dynamic>;
+      await TripPackStore().save({'announcements': items});
       if (!mounted) return;
       setState(() {
         _items = items;
+        _offline = false;
         _loading = false;
       });
     } catch (_) {
+      final pack = await TripPackStore().load();
+      final cached = pack?['announcements'];
       if (!mounted) return;
-      setState(() {
-        _error = 'Could not load broadcasts.';
-        _loading = false;
-      });
+      if (cached is List && cached.isNotEmpty) {
+        setState(() {
+          _items = cached;
+          _offline = true;
+          _error = 'Offline — showing saved broadcasts.';
+          _loading = false;
+        });
+      } else {
+        setState(() {
+          _error = 'Could not load broadcasts.';
+          _loading = false;
+        });
+      }
     }
   }
 
@@ -99,7 +114,12 @@ class _BroadcastScreenState extends ConsumerState<BroadcastScreen> {
               subtitle: 'One-way updates from leaders',
             ),
             if (_error != null) ...[
-              StatusBanner(kind: StatusBannerKind.danger, message: _error!),
+              StatusBanner(
+                kind: _offline
+                    ? StatusBannerKind.offline
+                    : StatusBannerKind.danger,
+                message: _error!,
+              ),
               const SizedBox(height: 12),
             ],
             if (canSend) ...[

@@ -58,6 +58,7 @@ class _ItineraryScreenState extends ConsumerState<ItineraryScreen> {
         _offline = false;
         _loading = false;
       });
+      await TripPackStore().save({'itinerary': stops});
       WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToToday());
     } catch (_) {
       final pack = await TripPackStore().load();

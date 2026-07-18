@@ -21,17 +21,21 @@ final authProvider = ChangeNotifierProvider<AuthController>((ref) {
 class AuthController extends ChangeNotifier {
   AuthController(this._api) {
     _api.onUnauthorized = logout;
+    _api.refreshAccessToken = refreshAccessToken;
   }
 
   final ApiClient _api;
   final _store = SecureStore();
   String? token;
+  String? refreshToken;
   Map<String, dynamic>? user;
   String? lastError;
+  bool _refreshing = false;
 
   Future<void> bootstrap() async {
     final session = await _store.loadSession();
     token = session.token;
+    refreshToken = session.refreshToken;
     final raw = session.userJson;
     if (raw != null) {
       try {
@@ -62,13 +66,7 @@ class AuthController extends ChangeNotifier {
         '/auth/otp/verify',
         body: {'phone': phone, 'code': code},
       );
-      token = res['access_token'] as String;
-      user = Map<String, dynamic>.from(res['user'] as Map);
-      _api.token = token;
-      await _store.saveSession(
-        token: token!,
-        userJson: jsonEncode(user),
-      );
+      await _applyAuthResponse(res);
       notifyListeners();
       await PushBootstrap(_api).registerIfLoggedIn();
       return true;
@@ -78,8 +76,42 @@ class AuthController extends ChangeNotifier {
     }
   }
 
+  Future<bool> refreshAccessToken() async {
+    if (_refreshing) return false;
+    final rt = refreshToken;
+    if (rt == null || rt.isEmpty) return false;
+    _refreshing = true;
+    try {
+      final res = await _api.post(
+        '/auth/refresh',
+        body: {'refresh_token': rt},
+        skipAuthRefresh: true,
+      );
+      await _applyAuthResponse(res);
+      notifyListeners();
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      _refreshing = false;
+    }
+  }
+
+  Future<void> _applyAuthResponse(Map<String, dynamic> res) async {
+    token = res['access_token'] as String;
+    refreshToken = res['refresh_token'] as String?;
+    user = Map<String, dynamic>.from(res['user'] as Map);
+    _api.token = token;
+    await _store.saveSession(
+      token: token!,
+      userJson: jsonEncode(user),
+      refreshToken: refreshToken,
+    );
+  }
+
   Future<void> logout() async {
     token = null;
+    refreshToken = null;
     user = null;
     _api.token = null;
     await _store.clear();

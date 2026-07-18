@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/present_sync.dart';
 import '../../core/theme.dart';
 import '../../core/trip_pack_store.dart';
 import '../../core/widgets/feature_tile.dart';
@@ -23,7 +25,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   String? _packNote;
   bool _loading = true;
   bool _fromCache = false;
+  bool _localPresent = false;
+  bool _markingPresent = false;
   final _pack = TripPackStore();
+  final _present = PresentSync();
 
   @override
   void initState() {
@@ -47,9 +52,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ? <dynamic>[]
           : await api.get('/trips/$tripId/itinerary') as List<dynamic>;
       final announcements = await api.get('/announcements') as List<dynamic>;
+      await _present.flush(api);
 
       final assignmentMap =
           assignment is Map<String, dynamic> ? assignment : null;
+      final openCountId = now['open_count_session_id']?.toString();
+      if (openCountId != null && openCountId.isNotEmpty) {
+        await _present.cacheOpenSession({'id': openCountId});
+      } else {
+        await _present.cacheOpenSession(null);
+      }
       await _pack.save({
         'now': now,
         'assignment': assignmentMap,
@@ -57,12 +69,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         'announcements': announcements,
       });
       final synced = await _pack.syncedAt();
+      final queued = openCountId == null
+          ? false
+          : await _present.isQueued(openCountId);
 
       if (!mounted) return;
       setState(() {
         _now = now;
         _assignment = assignmentMap;
+        _localPresent = queued;
         _loading = false;
+        _fromCache = false;
         _packNote =
             synced == null ? null : 'Trip pack saved ${synced.toLocal()}';
       });
@@ -70,9 +87,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       final cached = await _pack.load();
       if (!mounted) return;
       if (cached != null) {
+        final openCountId = cached['open_count_session_id']?.toString() ??
+            (cached['now'] as Map?)?['open_count_session_id']?.toString();
+        final queued = openCountId == null
+            ? false
+            : await _present.isQueued(openCountId);
         setState(() {
           _now = cached['now'] as Map<String, dynamic>?;
           _assignment = cached['assignment'] as Map<String, dynamic>?;
+          _localPresent = queued;
           _error = 'Offline — showing saved trip pack.';
           _fromCache = true;
           _loading = false;
@@ -85,6 +108,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         });
       }
     }
+  }
+
+  Future<void> _markPresentFromHome(String sessionId) async {
+    setState(() {
+      _markingPresent = true;
+      _localPresent = true;
+    });
+    HapticFeedback.mediumImpact();
+    final api = ref.read(apiClientProvider);
+    final result = await _present.markPresent(api, sessionId: sessionId);
+    if (!mounted) return;
+    setState(() => _markingPresent = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          result.queued
+              ? 'Queued offline. Will sync when connected.'
+              : 'Marked Present. Swamiye Sharanam.',
+        ),
+      ),
+    );
+    if (!result.queued) await _load();
   }
 
   @override
@@ -153,19 +198,40 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   ),
                   const SizedBox(height: 16),
                   if (openCountId != null) ...[
-                    Semantics(
-                      button: true,
-                      label: 'I am Present',
-                      child: FilledButton.icon(
-                        style: FilledButton.styleFrom(
-                          backgroundColor: c.success,
-                          foregroundColor: c.onSuccess,
-                          minimumSize: const Size.fromHeight(64),
+                    if (_localPresent)
+                      StatusBanner(
+                        kind: StatusBannerKind.success,
+                        title: 'You are marked Present',
+                        message: _fromCache
+                            ? 'Queued or saved offline — open Count for the live board.'
+                            : 'Swamiye Sharanam Ayyappa.',
+                      )
+                    else
+                      Semantics(
+                        button: true,
+                        label: 'I am Present',
+                        child: FilledButton.icon(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: c.success,
+                            foregroundColor: c.onSuccess,
+                            minimumSize: const Size.fromHeight(64),
+                          ),
+                          onPressed: _markingPresent
+                              ? null
+                              : () => _markPresentFromHome(
+                                    openCountId.toString(),
+                                  ),
+                          icon: const Icon(
+                            Icons.check_circle_outline,
+                            size: 26,
+                          ),
+                          label: const Text('I am Present'),
                         ),
-                        onPressed: () => context.go('/count'),
-                        icon: const Icon(Icons.check_circle_outline, size: 26),
-                        label: const Text('Count open — mark Present'),
                       ),
+                    const SizedBox(height: 8),
+                    TextButton(
+                      onPressed: () => context.go('/count'),
+                      child: const Text('Open live count board'),
                     ),
                     const SizedBox(height: 16),
                   ],

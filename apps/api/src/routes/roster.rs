@@ -1,5 +1,5 @@
 use axum::extract::State;
-use axum::routing::{get, post};
+use axum::routing::get;
 use axum::{Json, Router};
 use serde::Deserialize;
 use uuid::Uuid;

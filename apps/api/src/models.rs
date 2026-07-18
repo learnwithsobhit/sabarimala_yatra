@@ -41,16 +41,6 @@ pub enum CountMarkStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
-#[sqlx(type_name = "count_mark_source", rename_all = "snake_case")]
-#[serde(rename_all = "snake_case")]
-pub enum CountMarkSource {
-    #[sqlx(rename = "self")]
-    #[serde(rename = "self")]
-    SelfMark,
-    Helper,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "count_scope_kind", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum CountScopeKind {
@@ -117,19 +107,6 @@ pub struct CountSession {
     pub closed_by: Option<Uuid>,
     pub closed_at: Option<DateTime<Utc>>,
     pub ready_to_march_note: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, FromRow)]
-pub struct CountMarkRow {
-    pub id: Uuid,
-    pub session_id: Uuid,
-    pub member_id: Uuid,
-    pub status: CountMarkStatus,
-    pub source: CountMarkSource,
-    pub marked_by: Uuid,
-    pub marked_at: DateTime<Utc>,
-    pub display_name: String,
-    pub phone_e164: String,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]

@@ -13,8 +13,11 @@ import 'features/food/food_screen.dart';
 import 'features/home/home_screen.dart';
 import 'features/itinerary/itinerary_screen.dart';
 import 'features/lost/lost_person_screen.dart';
+import 'features/feedback/feedback_screen.dart';
+import 'features/mala/mala_reminders_screen.dart';
 import 'features/memories/memories_screen.dart';
 import 'features/more/more_screen.dart';
+import 'features/notes/day_notes_screen.dart';
 import 'features/packing/packing_screen.dart';
 import 'features/roster/roster_screen.dart';
 import 'providers/auth_provider.dart';
@@ -101,6 +104,18 @@ final goRouterProvider = Provider<GoRouter>((ref) {
                   GoRoute(
                     path: 'memories',
                     builder: (_, __) => const MemoriesScreen(),
+                  ),
+                  GoRoute(
+                    path: 'notes',
+                    builder: (_, __) => const DayNotesScreen(),
+                  ),
+                  GoRoute(
+                    path: 'mala',
+                    builder: (_, __) => const MalaRemindersScreen(),
+                  ),
+                  GoRoute(
+                    path: 'feedback',
+                    builder: (_, __) => const FeedbackScreen(),
                   ),
                 ],
               ),

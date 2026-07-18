@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -34,6 +35,8 @@ class PresentQueue {
       'session_id': sessionId,
       'client_id': clientId,
       'queued_at': DateTime.now().toIso8601String(),
+      'attempts': 0,
+      'next_retry_at': DateTime.now().toIso8601String(),
     });
     await _save(items);
   }
@@ -44,6 +47,11 @@ class PresentQueue {
     await _save(items);
   }
 
+  Future<bool> isQueued(String sessionId) async {
+    final items = await load();
+    return items.any((e) => e['session_id'] == sessionId);
+  }
+
   Future<int> flush(
     Future<void> Function(String sessionId, String clientId) send,
   ) async {
@@ -51,7 +59,16 @@ class PresentQueue {
     if (items.isEmpty) return 0;
     final remaining = <Map<String, dynamic>>[];
     var flushed = 0;
+    final now = DateTime.now();
     for (final item in items) {
+      final nextRetryRaw = item['next_retry_at']?.toString();
+      final nextRetry = nextRetryRaw == null
+          ? null
+          : DateTime.tryParse(nextRetryRaw);
+      if (nextRetry != null && nextRetry.isAfter(now)) {
+        remaining.add(item);
+        continue;
+      }
       try {
         await send(
           item['session_id'] as String,
@@ -59,7 +76,14 @@ class PresentQueue {
         );
         flushed++;
       } catch (_) {
-        remaining.add(item);
+        final attempts = ((item['attempts'] as num?)?.toInt() ?? 0) + 1;
+        final delaySeconds = min(300, 1 << min(attempts, 8));
+        remaining.add({
+          ...item,
+          'attempts': attempts,
+          'next_retry_at':
+              now.add(Duration(seconds: delaySeconds)).toIso8601String(),
+        });
       }
     }
     await _save(remaining);
