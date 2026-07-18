@@ -24,6 +24,7 @@ import 'features/more/more_screen.dart';
 import 'features/notes/day_notes_screen.dart';
 import 'features/packing/packing_screen.dart';
 import 'features/roster/roster_screen.dart';
+import 'features/splash/splash_screen.dart';
 import 'providers/auth_provider.dart';
 import 'shell.dart';
 
@@ -33,9 +34,11 @@ final goRouterProvider = Provider<GoRouter>((ref) {
   final auth = ref.read(authProvider);
 
   final router = GoRouter(
-    initialLocation: '/home',
+    initialLocation: '/splash',
     refreshListenable: auth,
     redirect: (context, state) {
+      // The branded landing screen routes itself onward; never redirect it.
+      if (state.matchedLocation == '/splash') return null;
       // Always read latest auth; do not close over a stale rebuild snapshot.
       final loggedIn = auth.token != null;
       final loggingIn = state.matchedLocation == '/login';
@@ -44,6 +47,7 @@ final goRouterProvider = Provider<GoRouter>((ref) {
       return null;
     },
     routes: [
+      GoRoute(path: '/splash', builder: (_, __) => const SplashScreen()),
       GoRoute(path: '/login', builder: (_, __) => const LoginScreen()),
       StatefulShellRoute.indexedStack(
         builder: (context, state, navigationShell) =>

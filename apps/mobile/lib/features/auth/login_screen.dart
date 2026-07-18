@@ -122,7 +122,34 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   const SizedBox(height: 16),
-                  Icon(Icons.temple_hindu_outlined, size: 52, color: c.gold)
+                  Center(
+                    child: Container(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(24),
+                        boxShadow: [
+                          BoxShadow(
+                            color: c.gold.withValues(alpha: .35),
+                            blurRadius: 28,
+                            offset: const Offset(0, 10),
+                          ),
+                        ],
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(24),
+                        child: Image.asset(
+                          'assets/branding/ayyappa_app_icon.png',
+                          width: 104,
+                          height: 104,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => Icon(
+                            Icons.temple_hindu_outlined,
+                            size: 52,
+                            color: c.gold,
+                          ),
+                        ),
+                      ),
+                    ),
+                  )
                       .animate()
                       .fadeIn(duration: 400.ms)
                       .scale(begin: const Offset(.9, .9)),
