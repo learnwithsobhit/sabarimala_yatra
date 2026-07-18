@@ -103,15 +103,17 @@ impl MediaStore {
         format!("media/{}/{}.{}", trip_id, Uuid::new_v4(), ext)
     }
 
-    /// Build a yatri-photo object key: `yatris/{trip}/{uuid}.{ext}`.
+    /// Build a yatri-photo object key: `media/yatris/{trip}/{uuid}.{ext}`.
+    /// Kept under the `media/` prefix so it is covered by the existing public
+    /// read policy / CloudFront distribution (see docs/media-s3-setup.md).
     pub fn build_yatri_key(&self, trip_id: Uuid, ext: &str) -> String {
         let ext = sanitize_ext(ext);
-        format!("yatris/{}/{}.{}", trip_id, Uuid::new_v4(), ext)
+        format!("media/yatris/{}/{}.{}", trip_id, Uuid::new_v4(), ext)
     }
 
     /// Yatri photo keys must live under this trip's prefix (guards confirm).
     pub fn yatri_key_belongs_to_trip(&self, key: &str, trip_id: Uuid) -> bool {
-        !key.contains("..") && key.starts_with(&format!("yatris/{}/", trip_id))
+        !key.contains("..") && key.starts_with(&format!("media/yatris/{}/", trip_id))
     }
 
     /// Keys must live under this trip's media prefix (guards `confirm`).
