@@ -472,12 +472,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       tooltip: _listening ? 'Stop listening' : 'Ask by voice',
                       onPressed: _busy ? null : _toggleListening,
                       icon: Icon(_listening ? Icons.mic : Icons.mic_none),
-                      style: _listening
-                          ? IconButton.styleFrom(
-                              backgroundColor: theme.colorScheme.error,
-                              foregroundColor: theme.colorScheme.onError,
-                            )
-                          : null,
+                      // The theme's ColorScheme doesn't define
+                      // secondaryContainer, so filledTonal would fall back to
+                      // charcoal-on-charcoal; set explicit colors instead.
+                      style: IconButton.styleFrom(
+                        backgroundColor: _listening
+                            ? theme.colorScheme.error
+                            : theme.colorScheme.primaryContainer,
+                        foregroundColor: _listening
+                            ? theme.colorScheme.onError
+                            : theme.colorScheme.onPrimaryContainer,
+                      ),
                     ),
                   ],
                   const SizedBox(width: 8),
