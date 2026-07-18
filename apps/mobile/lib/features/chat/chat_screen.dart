@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/theme.dart';
+import '../../core/voice_service.dart';
 import '../../core/widgets/widgets.dart';
 import '../../providers/auth_provider.dart';
 
@@ -17,9 +18,18 @@ class ChatScreen extends ConsumerStatefulWidget {
 
 class _ChatScreenState extends ConsumerState<ChatScreen> {
   static const _cacheKey = 'yatra_guide_messages_v1';
+  static const _langKey = 'yatra_guide_voice_lang_v1';
+  static const _speakKey = 'yatra_guide_voice_speak_v1';
   final _controller = TextEditingController();
   final _messages = <_Msg>[];
   bool _busy = false;
+
+  final _voice = VoiceService();
+  bool _voiceReady = false;
+  bool _listening = false;
+  bool _speakAnswers = true;
+  List<VoiceLang> _inputLangs = const [];
+  VoiceLang _lang = VoiceLang.english;
 
   final _chips = const [
     'Lost at Pamba?',
@@ -91,6 +101,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   void initState() {
     super.initState();
     _loadCachedMessages();
+    _initVoice();
+  }
+
+  Future<void> _initVoice() async {
+    final prefs = await SharedPreferences.getInstance();
+    await _voice.init();
+    if (!mounted) return;
+    final inputLangs = _voice.availableInputLangs();
+    final savedCode = prefs.getString(_langKey);
+    final saved = VoiceLang.values.where((l) => l.code == savedCode);
+    setState(() {
+      _voiceReady = true;
+      _inputLangs = inputLangs;
+      _speakAnswers = prefs.getBool(_speakKey) ?? true;
+      if (saved.isNotEmpty && inputLangs.contains(saved.first)) {
+        _lang = saved.first;
+      } else if (inputLangs.isNotEmpty) {
+        _lang = inputLangs.first;
+      }
+    });
   }
 
   Future<void> _loadCachedMessages() async {
@@ -129,12 +159,56 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   @override
   void dispose() {
+    _voice.dispose();
     _controller.dispose();
     super.dispose();
   }
 
+  Future<void> _toggleListening() async {
+    if (_listening) {
+      await _voice.stopListening();
+      if (mounted) setState(() => _listening = false);
+      return;
+    }
+    await _voice.stopSpeaking();
+    setState(() => _listening = true);
+    await _voice.listen(
+      lang: _lang,
+      onResult: (text, isFinal) {
+        if (!mounted) return;
+        setState(() => _controller.text = text);
+        _controller.selection = TextSelection.fromPosition(
+          TextPosition(offset: _controller.text.length),
+        );
+        if (isFinal && text.trim().isNotEmpty) {
+          final q = text;
+          _controller.clear();
+          _ask(q);
+        }
+      },
+      onDone: () {
+        if (mounted) setState(() => _listening = false);
+      },
+    );
+  }
+
+  Future<void> _setLang(VoiceLang lang) async {
+    setState(() => _lang = lang);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_langKey, lang.code);
+  }
+
+  Future<void> _toggleSpeak() async {
+    final next = !_speakAnswers;
+    setState(() => _speakAnswers = next);
+    if (!next) await _voice.stopSpeaking();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_speakKey, next);
+  }
+
   Future<void> _ask(String q) async {
     if (q.trim().isEmpty) return;
+    await _voice.stopSpeaking();
     setState(() {
       _messages.add(_Msg(q, true));
       _busy = true;
@@ -158,6 +232,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ));
       });
       await _saveCachedMessages();
+      _maybeSpeak(answer);
     } catch (_) {
       final offline = _offlineFaqs[q.trim()];
       if (!mounted) return;
@@ -173,17 +248,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 },
               ],
             )));
+        await _saveCachedMessages();
+        _maybeSpeak(offline.answer);
       } else {
         setState(() => _messages.add(_Msg(
               'Could not reach the guide. Try a chip above offline, or ask a leader when online.',
               false,
               grounded: false,
             )));
+        await _saveCachedMessages();
       }
-      await _saveCachedMessages();
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  void _maybeSpeak(String text) {
+    if (_speakAnswers && _voiceReady) _voice.speak(text, _lang);
   }
 
   @override
@@ -192,7 +273,45 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final theme = Theme.of(context);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Yatra guide')),
+      appBar: AppBar(
+        title: const Text('Yatra guide'),
+        actions: [
+          if (_voiceReady && _voice.ttsSupported)
+            IconButton(
+              tooltip: _speakAnswers
+                  ? 'Read answers aloud: on'
+                  : 'Read answers aloud: off',
+              onPressed: _toggleSpeak,
+              icon: Icon(
+                _speakAnswers ? Icons.volume_up : Icons.volume_off,
+              ),
+            ),
+          if (_voiceReady && _inputLangs.length > 1)
+            PopupMenuButton<VoiceLang>(
+              tooltip: 'Voice language',
+              initialValue: _lang,
+              onSelected: _setLang,
+              icon: const Icon(Icons.language),
+              itemBuilder: (context) => _inputLangs
+                  .map(
+                    (lang) => PopupMenuItem<VoiceLang>(
+                      value: lang,
+                      child: Row(
+                        children: [
+                          if (lang == _lang)
+                            const Icon(Icons.check, size: 18)
+                          else
+                            const SizedBox(width: 18),
+                          const SizedBox(width: 8),
+                          Text(lang.label),
+                        ],
+                      ),
+                    ),
+                  )
+                  .toList(),
+            ),
+        ],
+      ),
       body: Column(
         children: [
           SingleChildScrollView(
@@ -214,11 +333,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           ),
           Expanded(
             child: _messages.isEmpty
-                ? const EmptyState(
+                ? EmptyState(
                     icon: Icons.chat_bubble_outline,
                     message: 'Ask about the yatra',
-                    detail:
-                        'Try a chip above — answers come from the trip document.',
+                    detail: _voiceReady && _voice.sttSupported
+                        ? 'Try a chip above, type, or tap the mic to ask by voice — answers come from the trip document.'
+                        : 'Try a chip above — answers come from the trip document.',
                   )
                 : ListView.builder(
                     padding: const EdgeInsets.all(16),
@@ -268,18 +388,36 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                           : theme.colorScheme.primary,
                                     ),
                                     const SizedBox(width: 6),
-                                    Text(
-                                      m.grounded
-                                          ? 'Grounded in trip docs'
-                                          : 'Not found in trip docs',
-                                      style: theme.textTheme.labelSmall
-                                          ?.copyWith(
-                                        color: m.grounded
-                                            ? c.success
-                                            : theme.colorScheme.primary,
-                                        fontWeight: FontWeight.w700,
+                                    Expanded(
+                                      child: Text(
+                                        m.grounded
+                                            ? 'Grounded in trip docs'
+                                            : 'Not found in trip docs',
+                                        style: theme.textTheme.labelSmall
+                                            ?.copyWith(
+                                          color: m.grounded
+                                              ? c.success
+                                              : theme.colorScheme.primary,
+                                          fontWeight: FontWeight.w700,
+                                        ),
                                       ),
                                     ),
+                                    if (_voiceReady && _voice.ttsSupported)
+                                      InkWell(
+                                        onTap: () =>
+                                            _voice.speak(m.text, _lang),
+                                        borderRadius:
+                                            BorderRadius.circular(20),
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(4),
+                                          child: Icon(
+                                            Icons.volume_up_outlined,
+                                            size: 18,
+                                            semanticLabel: 'Read answer aloud',
+                                            color: theme.colorScheme.primary,
+                                          ),
+                                        ),
+                                      ),
                                   ],
                                 ),
                                 if (m.citations.isNotEmpty) ...[
@@ -328,6 +466,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                             },
                     ),
                   ),
+                  if (_voiceReady && _voice.sttSupported) ...[
+                    const SizedBox(width: 8),
+                    IconButton.filledTonal(
+                      tooltip: _listening ? 'Stop listening' : 'Ask by voice',
+                      onPressed: _busy ? null : _toggleListening,
+                      icon: Icon(_listening ? Icons.mic : Icons.mic_none),
+                      style: _listening
+                          ? IconButton.styleFrom(
+                              backgroundColor: theme.colorScheme.error,
+                              foregroundColor: theme.colorScheme.onError,
+                            )
+                          : null,
+                    ),
+                  ],
                   const SizedBox(width: 8),
                   IconButton.filled(
                     onPressed: _busy

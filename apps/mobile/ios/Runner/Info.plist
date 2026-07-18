@@ -4,6 +4,10 @@
 	<dict>
 		<key>CADisableMinimumFrameDurationOnPhone</key>
 		<true/>
+		<key>NSMicrophoneUsageDescription</key>
+		<string>Swamy Sharanam uses the microphone so you can ask the Yatra guide questions by voice.</string>
+		<key>NSSpeechRecognitionUsageDescription</key>
+		<string>Swamy Sharanam uses speech recognition to turn your spoken questions into text for the Yatra guide.</string>
 		<key>CFBundleDevelopmentRegion</key>
 		<string>$(DEVELOPMENT_LANGUAGE)</string>
 		<key>CFBundleDisplayName</key>
