@@ -83,13 +83,21 @@ class VoiceService {
       }
     }
 
-    try {
-      final langs = await _tts.getLanguages;
-      if (langs is List) {
-        _ttsLanguages = langs.map((e) => e.toString()).toList();
+    // Browsers (notably Chrome) populate speechSynthesis voices
+    // asynchronously, so the first query often returns empty. Retry briefly
+    // before concluding TTS is unavailable.
+    for (var attempt = 0; attempt < 6 && _ttsLanguages.isEmpty; attempt++) {
+      if (attempt > 0) {
+        await Future<void>.delayed(const Duration(milliseconds: 400));
       }
-    } catch (_) {
-      _ttsLanguages = const [];
+      try {
+        final langs = await _tts.getLanguages;
+        if (langs is List) {
+          _ttsLanguages = langs.map((e) => e.toString()).toList();
+        }
+      } catch (_) {
+        break;
+      }
     }
 
     try {
