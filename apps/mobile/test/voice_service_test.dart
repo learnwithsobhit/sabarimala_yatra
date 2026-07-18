@@ -19,7 +19,9 @@ void main() {
       expect(voice.isSpeaking, isFalse);
 
       // Speaking/listening are safe no-ops when unsupported.
-      await voice.listen(lang: VoiceLang.english, onResult: (_, __) {});
+      final started =
+          await voice.listen(lang: VoiceLang.english, onResult: (_, __) {});
+      expect(started, isFalse);
       await voice.speak('hello', VoiceLang.english);
       await voice.dispose();
     });

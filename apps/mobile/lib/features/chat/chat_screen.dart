@@ -105,16 +105,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   Future<void> _initVoice() async {
-    final prefs = await SharedPreferences.getInstance();
-    await _voice.init();
+    SharedPreferences? prefs;
+    try {
+      prefs = await SharedPreferences.getInstance();
+      await _voice.init();
+    } catch (_) {
+      // Voice engines are best-effort; still mark ready so the mic can appear
+      // when the browser claims speech support.
+    }
     if (!mounted) return;
     final inputLangs = _voice.availableInputLangs();
-    final savedCode = prefs.getString(_langKey);
+    final savedCode = prefs?.getString(_langKey);
     final saved = VoiceLang.values.where((l) => l.code == savedCode);
     setState(() {
       _voiceReady = true;
       _inputLangs = inputLangs;
-      _speakAnswers = prefs.getBool(_speakKey) ?? true;
+      _speakAnswers = prefs?.getBool(_speakKey) ?? true;
       if (saved.isNotEmpty && inputLangs.contains(saved.first)) {
         _lang = saved.first;
       } else if (inputLangs.isNotEmpty) {
@@ -172,7 +178,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
     await _voice.stopSpeaking();
     setState(() => _listening = true);
-    await _voice.listen(
+    final started = await _voice.listen(
       lang: _lang,
       onResult: (text, isFinal) {
         if (!mounted) return;
@@ -190,6 +196,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         if (mounted) setState(() => _listening = false);
       },
     );
+    if (!started && mounted) {
+      setState(() => _listening = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Voice input is not available in this browser. Allow the microphone, or type your question.',
+          ),
+        ),
+      );
+    }
   }
 
   Future<void> _setLang(VoiceLang lang) async {
