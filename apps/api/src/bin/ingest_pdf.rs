@@ -36,6 +36,44 @@ fn chunks(text: &str, max_chars: usize) -> Vec<String> {
     result
 }
 
+/// Heading-aware chunking for Markdown/plain text: start a new chunk at each
+/// `#`/`##` heading (used as the section title) and split long sections at
+/// `max_chars`. Far more reliable than PDF extraction for tables/itineraries.
+fn markdown_chunks(text: &str, max_chars: usize) -> Vec<(String, String)> {
+    let mut result: Vec<(String, String)> = Vec::new();
+    let mut section = "Overview".to_string();
+    let mut current = String::new();
+
+    let flush = |section: &str, current: &mut String, result: &mut Vec<(String, String)>| {
+        let body = current.trim();
+        if !body.is_empty() {
+            result.push((section.to_string(), body.to_string()));
+        }
+        current.clear();
+    };
+
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') {
+            flush(&section, &mut current, &mut result);
+            section = trimmed.trim_start_matches('#').trim().to_string();
+            continue;
+        }
+        if !current.is_empty() && current.len() + line.len() + 1 > max_chars {
+            flush(&section, &mut current, &mut result);
+        }
+        current.push_str(line);
+        current.push('\n');
+    }
+    flush(&section, &mut current, &mut result);
+    result
+}
+
+fn is_text_source(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".md") || lower.ends_with(".markdown") || lower.ends_with(".txt")
+}
+
 fn section_title(content: &str, index: usize) -> String {
     const HEADINGS: &[&str] = &[
         "High level Plan",
@@ -127,11 +165,23 @@ async fn main() -> Result<()> {
             .context("no trip exists; pass a trip UUID after the PDF path")?
     };
 
-    let text = pdf_extract::extract_text(path)
-        .with_context(|| format!("could not extract text from {path}"))?;
-    let chunks = chunks(&text, 1_500);
-    if chunks.is_empty() {
-        bail!("the PDF did not contain extractable text");
+    // Markdown/text sources are chunked by heading (reliable). PDFs fall back to
+    // paragraph chunking of the extracted text (lossy for tables).
+    let prepared: Vec<(String, String)> = if is_text_source(path) {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("could not read text file {path}"))?;
+        markdown_chunks(&text, 1_500)
+    } else {
+        let text = pdf_extract::extract_text(path)
+            .with_context(|| format!("could not extract text from {path}"))?;
+        chunks(&text, 1_500)
+            .into_iter()
+            .enumerate()
+            .map(|(i, content)| (section_title(&content, i + 1), content))
+            .collect()
+    };
+    if prepared.is_empty() {
+        bail!("the document did not contain extractable text");
     }
 
     let mut transaction = pool.begin().await?;
@@ -141,9 +191,10 @@ async fn main() -> Result<()> {
         .execute(&mut *transaction)
         .await?;
 
-    for (batch_index, batch) in chunks.chunks(32).enumerate() {
+    for batch in prepared.chunks(32) {
+        let contents: Vec<String> = batch.iter().map(|(_, content)| content.clone()).collect();
         let vectors = if let Some(key) = api_key.as_deref() {
-            let result = embeddings(key, batch).await?;
+            let result = embeddings(key, &contents).await?;
             if result.len() != batch.len() {
                 bail!("embedding response count did not match the input count");
             }
@@ -151,8 +202,7 @@ async fn main() -> Result<()> {
         } else {
             None
         };
-        for (index, content) in batch.iter().enumerate() {
-            let section = section_title(content, batch_index * 32 + index + 1);
+        for (index, (section, content)) in batch.iter().enumerate() {
             if let Some(vectors) = vectors.as_ref() {
                 sqlx::query(
                     r#"
@@ -192,7 +242,7 @@ async fn main() -> Result<()> {
              Run this command again after setting the key to add vector retrieval."
         );
     }
-    println!("Ingested {} chunks from {} for trip {}", chunks.len(), source_title, trip_id);
+    println!("Ingested {} chunks from {} for trip {}", prepared.len(), source_title, trip_id);
     Ok(())
 }
 

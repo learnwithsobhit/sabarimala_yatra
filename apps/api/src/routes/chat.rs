@@ -55,7 +55,7 @@ fn retrieve<'a>(q: &str, chunks: &'a [Chunk]) -> Vec<&'a Chunk> {
         .filter(|(s, _)| *s > 0)
         .collect();
     ranked.sort_by(|a, b| b.0.cmp(&a.0));
-    ranked.into_iter().take(4).map(|(_, c)| c).collect()
+    ranked.into_iter().take(6).map(|(_, c)| c).collect()
 }
 
 fn extractive_answer(top: &[&Chunk]) -> String {
@@ -126,53 +126,60 @@ async fn ask(
         }));
     }
 
-    let mut used_vector = false;
-    let mut chunks = Vec::<Chunk>::new();
+    // Load every chunk for this trip once — used for keyword scoring and to
+    // let the LLM see enough context for even small, specific facts.
+    let all: Vec<Chunk> = sqlx::query_as(
+        r#"
+        SELECT source_title, source_section, content
+        FROM knowledge_chunks
+        WHERE trip_id = $1
+        "#,
+    )
+    .bind(user.trip_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    // Hybrid retrieval: semantic (pgvector) + keyword, then merge. Semantic
+    // recall handles paraphrased questions; keyword recall catches exact tokens
+    // the embedding may miss (train numbers, hotel names, item names, phones).
+    let mut ranked: Vec<Chunk> = Vec::new();
     if let Some(key) = state.config.openai_api_key.as_deref() {
         match question_embedding(key, q).await {
             Ok(embedding) => {
-                chunks = sqlx::query_as(
+                let hits: Vec<Chunk> = sqlx::query_as(
                     r#"
                     SELECT source_title, source_section, content
                     FROM knowledge_chunks
                     WHERE trip_id = $1 AND embedding IS NOT NULL
                     ORDER BY embedding <=> CAST($2 AS vector)
-                    LIMIT 4
+                    LIMIT 8
                     "#,
                 )
                 .bind(user.trip_id)
                 .bind(vector_literal(&embedding))
                 .fetch_all(&state.db)
                 .await?;
-                used_vector = !chunks.is_empty();
+                ranked.extend(hits);
             }
             Err(e) => {
-                tracing::warn!(error = %e, "OpenAI embedding failed; using keyword retrieval");
+                tracing::warn!(error = %e, "OpenAI embedding failed; using keyword retrieval only");
             }
         }
     }
+    // Append keyword matches after the semantic hits.
+    ranked.extend(retrieve(q, &all).into_iter().cloned());
 
-    if chunks.is_empty() {
-        chunks = sqlx::query_as(
-        r#"
-        SELECT source_title, source_section, content
-        FROM knowledge_chunks
-        WHERE trip_id = $1
-        "#,
-        )
-        .bind(user.trip_id)
-        .fetch_all(&state.db)
-        .await?;
-    }
+    // De-duplicate by content, preserving order (semantic first); cap context.
+    let mut seen = std::collections::HashSet::new();
+    let top: Vec<&Chunk> = ranked
+        .iter()
+        .filter(|c| seen.insert(c.content.as_str()))
+        .take(8)
+        .collect();
 
-    let top: Vec<&Chunk> = if used_vector {
-        chunks.iter().collect()
-    } else {
-        retrieve(q, &chunks)
-    };
     if top.is_empty() {
         return Ok(Json(ChatAnswer {
-            answer: "I don't find that in the trip document. Please ask the trip leader, or try a question about schedule, trains, lost-person points, or Mandala guidelines.".into(),
+            answer: "I don't find that in the trip document. Please ask the trip leader, or try a question about the schedule, temples, trains, packing, lost-person points, or Mandala Vratham guidelines.".into(),
             citations: vec![],
             grounded: false,
             engine: "none".into(),
@@ -202,7 +209,7 @@ async fn ask(
             })
             .collect::<Vec<_>>()
             .join("\n\n");
-        let system = "You are the Swamy Sharanam trip guide. Answer ONLY from the provided trip excerpts. If the answer is not in the excerpts, say you don't find it in the trip document. Do not invent darshan timings, tickets, or religious rulings. Cite excerpt numbers when helpful.";
+        let system = "You are the Swamy Sharanam trip guide. Answer using ONLY the provided trip excerpts, but do synthesize and summarize across them — for example, if asked which places or temples to cover, list every temple/place and day mentioned in the excerpts. Only say you don't find it in the trip document when the excerpts truly contain nothing relevant. Do not invent darshan timings, ticket details, or religious rulings that are not in the excerpts. Prefer a concise, well-organized answer (use bullet points or day-wise lists when helpful).";
         let user_msg = format!("Trip excerpts:\n{context}\n\nQuestion: {q}");
         match llm.complete(system, &user_msg).await {
             Ok(answer) => {
