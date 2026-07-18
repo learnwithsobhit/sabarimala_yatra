@@ -1,11 +1,11 @@
 {
-    "name": "swamy_sharanam",
-    "short_name": "swamy_sharanam",
+    "name": "Swamy Sharanam",
+    "short_name": "Swamy Sharanam",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#7A1F12",
     "theme_color": "#C8811E",
-    "description": "A new Flutter project.",
+    "description": "Swamy Sharanam — Sabarimala yatra companion",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [
