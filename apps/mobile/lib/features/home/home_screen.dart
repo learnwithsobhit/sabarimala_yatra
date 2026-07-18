@@ -304,6 +304,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     childAspectRatio: 1.55,
                     children: [
                       FeatureTile(
+                        icon: Icons.chat_bubble_outline,
+                        label: 'Ask guide',
+                        subtitle: 'Itinerary FAQ',
+                        color: theme.colorScheme.primary,
+                        onTap: () => context.go('/more/chat'),
+                      ),
+                      if (auth.isLeaderOrVolunteer)
+                        FeatureTile(
+                          icon: Icons.directions_bus_outlined,
+                          label: 'Assignments',
+                          subtitle: 'Bus, room, train',
+                          color: const Color(0xFF0EA5E9),
+                          onTap: () => context.go('/more/assignments'),
+                        ),
+                      FeatureTile(
                         icon: Icons.route_outlined,
                         label: 'Itinerary',
                         subtitle: 'Full day plan',

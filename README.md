@@ -113,29 +113,118 @@ See [docs/nfr-checklist.md](docs/nfr-checklist.md), [docs/fcm-setup.md](docs/fcm
 
 ## Deploy
 
-- **API → Railway:** see [docs/deploy-railway.md](docs/deploy-railway.md). Key points: set the service **Root Directory to `apps/api`** (Dockerfile build context), use a **pgvector-capable Postgres** (the knowledge-embeddings migration runs `CREATE EXTENSION vector`), and set **`BIND_ADDR=0.0.0.0:$PORT`** (the app reads `BIND_ADDR`, not `PORT`).
-- **Web → Firebase Hosting:** see [docs/deploy-web-firebase.md](docs/deploy-web-firebase.md). Project `swamy-sharanam`, live at https://swamy-sharanam.web.app. Deploy with `API_BASE=https://YOUR_RAILWAY_HOST scripts/deploy_web.sh` (FCM push is disabled on web).
+Three moving parts, all currently live:
 
-### Railway env (Docker via `apps/api/Dockerfile` + `infra/railway.toml`)
+| Component | Platform | Where | Notes |
+| --- | --- | --- | --- |
+| API (Rust/Axum) | Railway | `https://api-production-f535.up.railway.app` | Docker build from `apps/api`, auto-runs migrations |
+| Postgres (+pgvector) | Railway | private `postgres.railway.internal` | `CREATE EXTENSION vector` required |
+| Web (Flutter web) | Firebase Hosting | https://swamy-sharanam.web.app | `API_BASE` baked in at build time |
+| Native APK | sideload | — | `scripts/build_apk.sh` |
 
-Production env (required):
+Detailed platform docs: [Railway (API + DB)](docs/deploy-railway.md) · [Firebase (web)](docs/deploy-web-firebase.md) · [S3 media](docs/media-s3-setup.md).
+
+### Prerequisites
+
+```bash
+npm i -g firebase-tools            # web deploy
+brew install railway               # or: npm i -g @railway/cli
+railway login && firebase login    # interactive, one time
+```
+
+### A. Database — Railway Postgres (with pgvector)
+
+The API runs `sqlx::migrate!` on every boot, so **you never run migrations by hand** — provisioning a database and deploying the API is enough. The one requirement is pgvector: migration `20260714000008_knowledge_embeddings.sql` executes `CREATE EXTENSION IF NOT EXISTS vector`, so the DB must support it (Railway's Postgres does — currently pgvector 0.8.5).
+
+```bash
+railway init --name swamy-sharanam     # create project (once)
+railway add --database postgres        # provision Postgres
+```
+
+Verify pgvector (optional): connect to the DB's public URL and run `CREATE EXTENSION IF NOT EXISTS vector;`.
+
+### B. API — Railway
+
+Deployed from the `apps/api` directory so the Docker build context matches the Dockerfile's `COPY` paths. Build config lives in [`apps/api/railway.json`](apps/api/railway.json) (Dockerfile builder + `/health` healthcheck).
+
+```bash
+cd apps/api
+railway add --service api                       # create the API service (once)
+railway variables --service api --skip-deploys \
+  --set 'DATABASE_URL=${{Postgres.DATABASE_URL}}' \
+  --set 'PORT=8080' \
+  --set 'DEV_AUTH=1' --set 'DEV_OTP_CODE=123456' \
+  --set 'JWT_SECRET=<long-random-string>' \
+  --set 'MEDIA_BACKEND=s3' \
+  --set 'S3_BUCKET=sabarimala-yatra-media' \
+  --set 'AWS_REGION=ap-south-1' \
+  --set 'S3_PUBLIC_URL=https://sabarimala-yatra-media.s3.ap-south-1.amazonaws.com' \
+  --set 'AWS_ACCESS_KEY_ID=<key>' --set 'AWS_SECRET_ACCESS_KEY=<secret>' \
+  --set 'OPENAI_API_KEY=<key>'                  # chatbot embeddings + grounded answers
+railway up --service api --ci                   # build + deploy (streams logs)
+railway domain --service api --port 8080        # generate public HTTPS domain
+```
+
+Wait for `/health` to return `{"status":"ok","database":"up"}`. On first boot the API seeds the demo trip, three rostered phones, itinerary, packing checklist, and starter knowledge chunks.
+
+**Port:** the app binds `0.0.0.0:$PORT` when `PORT` is set (Railway provides it; we pin `PORT=8080`), falling back to `BIND_ADDR`, then `0.0.0.0:8080`.
+
+#### Railway env vars
+
+Pilot (fixed OTP — any rostered phone logs in with `DEV_OTP_CODE`):
 
 | Var | Value |
 | --- | --- |
-| `DATABASE_URL` | Railway Postgres URL |
-| `JWT_SECRET` | Long random string (≠ default) |
-| `DEV_AUTH` | `0` (API refuses default JWT secret when this is off) |
-| `SMS_WEBHOOK_URL` | HTTPS OTP delivery adapter; see [docs/otp-webhook.md](docs/otp-webhook.md) |
-| `SMS_WEBHOOK_TOKEN` | Long random bearer token for the adapter |
-| `UPLOAD_DIR` | `/data/uploads` (or volume path; used when `MEDIA_BACKEND=local`) |
-| `MEDIA_BACKEND` | `s3` for prod media; needs `S3_BUCKET`, `AWS_*`, `MEDIA_PUBLIC_BASE_URL`/`S3_PUBLIC_URL` — see [docs/media-s3-setup.md](docs/media-s3-setup.md) |
+| `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` (private networking reference) |
+| `PORT` | `8080` |
+| `DEV_AUTH` | `1` |
+| `DEV_OTP_CODE` | `123456` (choose your own) |
+| `JWT_SECRET` | Long random string, ≥24 chars |
+| `MEDIA_BACKEND` + `S3_*` / `AWS_*` | S3 media — see [docs/media-s3-setup.md](docs/media-s3-setup.md) |
+| `OPENAI_API_KEY` | Chatbot embeddings + LLM answers (optional; extractive fallback without it) |
+
+Production (real OTP) — replace the pilot auth block:
+
+| Var | Value |
+| --- | --- |
+| `DEV_AUTH` | `0` (API refuses the default JWT secret when off) |
+| `SMS_WEBHOOK_URL` | HTTPS OTP delivery adapter — see [docs/otp-webhook.md](docs/otp-webhook.md) |
+| `SMS_WEBHOOK_TOKEN` | Long random bearer token |
 | FCM vars | See [docs/fcm-setup.md](docs/fcm-setup.md) |
 
-Release APK (HTTPS API only):
+### C. Chatbot knowledge base (RAG)
+
+`ingest_pdf` is **not** in the deployed image — run it locally against the Railway DB to embed the trip document. It force-loads the repo `.env` (which points at local Postgres), so run it with the compiled binary from a neutral directory, or temporarily point `DATABASE_URL` at Railway:
 
 ```bash
-API_BASE=https://YOUR_RAILWAY_HOST ./scripts/build_apk.sh
+cd apps/api
+DATABASE_URL='<railway-postgres-public-url>' OPENAI_API_KEY='<key>' \
+  cargo run --bin ingest_pdf -- ../../Shabarimala2026_Aug15-20.pdf <trip_uuid>
 ```
+
+Re-run after uploading a new/updated trip PDF so embeddings stay in sync.
+
+### D. Web — Firebase Hosting
+
+`API_BASE` is compiled in, so **rebuild whenever the API URL changes**. One command builds + deploys:
+
+```bash
+API_BASE=https://api-production-f535.up.railway.app scripts/deploy_web.sh
+```
+
+Cache headers in [`apps/mobile/firebase.json`](apps/mobile/firebase.json) mark entry files (`main.dart.js`, `flutter_bootstrap.js`, service worker) `no-cache` so returning users don't get stuck on a stale bundle. FCM push is disabled on web by design.
+
+### E. Native APK
+
+```bash
+API_BASE=https://api-production-f535.up.railway.app ./scripts/build_apk.sh
+```
+
+### Redeploying after changes
+
+- **API code:** `cd apps/api && railway up --service api --ci`
+- **Env var:** `railway variables --service api --set 'KEY=VALUE'` (auto-restarts)
+- **Web:** re-run `scripts/deploy_web.sh` with the current `API_BASE`
 
 Leader dry-run: install on 2–3 phones, Start count → Present → Stop, then Broadcasts + SOS.
 

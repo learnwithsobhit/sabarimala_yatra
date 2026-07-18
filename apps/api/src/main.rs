@@ -111,8 +111,8 @@ async fn seed_demo_if_empty(state: &AppState) -> anyhow::Result<()> {
     let swamy_member = uuid::Uuid::new_v4();
 
     sqlx::query(
-        r#"INSERT INTO trip_members (id, trip_id, user_id, role, is_kanni, is_senior)
-           VALUES ($1, $2, $3, 'leader', false, true)"#,
+        r#"INSERT INTO trip_members (id, trip_id, user_id, role, is_kanni, is_senior, yatra_years)
+           VALUES ($1, $2, $3, 'leader', false, true, 5)"#,
     )
     .bind(leader_member)
     .bind(trip_id)
@@ -121,8 +121,8 @@ async fn seed_demo_if_empty(state: &AppState) -> anyhow::Result<()> {
     .await?;
 
     sqlx::query(
-        r#"INSERT INTO trip_members (id, trip_id, user_id, role, is_kanni, is_senior)
-           VALUES ($1, $2, $3, 'volunteer', false, false)"#,
+        r#"INSERT INTO trip_members (id, trip_id, user_id, role, is_kanni, is_senior, yatra_years)
+           VALUES ($1, $2, $3, 'volunteer', false, false, 3)"#,
     )
     .bind(volunteer_member)
     .bind(trip_id)
@@ -131,8 +131,8 @@ async fn seed_demo_if_empty(state: &AppState) -> anyhow::Result<()> {
     .await?;
 
     sqlx::query(
-        r#"INSERT INTO trip_members (id, trip_id, user_id, role, is_kanni, is_senior)
-           VALUES ($1, $2, $3, 'swamy', true, false)"#,
+        r#"INSERT INTO trip_members (id, trip_id, user_id, role, is_kanni, is_senior, yatra_years)
+           VALUES ($1, $2, $3, 'swamy', true, false, 1)"#,
     )
     .bind(swamy_member)
     .bind(trip_id)
@@ -228,6 +228,37 @@ async fn seed_demo_if_empty(state: &AppState) -> anyhow::Result<()> {
         .bind("Shabarimala2026_Aug15-20.pdf")
         .bind(title)
         .bind(content)
+        .execute(&state.db)
+        .await?;
+    }
+
+    let packing = [
+        ("Black dhotis with black shalya (extra for rain)", "3+ sets", 1),
+        ("Irumudi bag + inner coconut bag (wash if reused)", "1 set", 2),
+        ("Swamy mala from previous trip (Kanni: provided)", "1", 3),
+        ("Original photo ID / Aadhaar for Virtual Q", "1", 4),
+        ("Waist pouch for valuables", "1", 5),
+        ("Reusable water bottle for hill climb", "0.5–1 L", 6),
+        ("Thin raincoat or blue plastic cover", "1", 7),
+        ("Air pillow", "1", 8),
+        ("Pen torch / power-bank / charger", "as needed", 9),
+        ("Spare plastic covers (wet clothes / prasadham)", "few", 10),
+        ("Money + small change (₹10/20/50)", "misc", 11),
+        ("Personal medicines (BP, sugar, fever, cold)", "1 week", 12),
+        ("Rice from home (do not mix with dal/wheat)", "<200 gms", 13),
+        ("Kumkum / turmeric / vibhuti (group may carry)", "optional", 14),
+        ("Monetary offerings from friends/family", "if any", 15),
+    ];
+
+    for (title, hint, sort) in packing {
+        sqlx::query(
+            r#"INSERT INTO packing_items (trip_id, title, quantity_hint, sort_order)
+               VALUES ($1, $2, $3, $4)"#,
+        )
+        .bind(trip_id)
+        .bind(title)
+        .bind(hint)
+        .bind(sort)
         .execute(&state.db)
         .await?;
     }

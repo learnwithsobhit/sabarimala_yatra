@@ -20,12 +20,22 @@ The Dockerfile copies `Cargo.toml`, `src`, `migrations` with paths relative to
 - **Builder** = Dockerfile, **Dockerfile Path** = `Dockerfile`
 - **Healthcheck Path** = `/health`
 
+These are captured in [`apps/api/railway.json`](../apps/api/railway.json), so deploying
+from `apps/api` (via `railway up` or a service whose Root Directory is `apps/api`)
+applies them automatically. The CLI flow:
+
+```bash
+cd apps/api
+railway add --service api        # once
+railway up --service api --ci    # build + deploy
+```
+
 ## 3. Variables
 
 Pilot (fixed dev OTP — any rostered phone logs in with `DEV_OTP_CODE`):
 
 ```bash
-BIND_ADDR=0.0.0.0:$PORT          # critical: the app reads BIND_ADDR, not PORT
+PORT=8080                        # app binds 0.0.0.0:$PORT (falls back to BIND_ADDR, then :8080)
 DATABASE_URL=${{Postgres.DATABASE_URL}}
 DEV_AUTH=1
 DEV_OTP_CODE=123456              # choose your own
@@ -58,7 +68,8 @@ are optional and only needed for native push.
 ## 4. Deploy + domain
 
 1. Deploy the service and wait for `/health` to report `{"database":"up"}`.
-2. Generate a public domain (Settings -> Networking -> Generate Domain).
+2. Generate a public domain — `railway domain --service api --port 8080`
+   (or Settings -> Networking -> Generate Domain, target port `8080`).
 3. Note the HTTPS URL, e.g. `https://<svc>.up.railway.app` — this is the
    `API_BASE` for the web app / APK.
 

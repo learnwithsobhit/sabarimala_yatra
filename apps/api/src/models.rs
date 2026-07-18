@@ -77,6 +77,10 @@ pub struct TripMemberRow {
     pub display_name: String,
     pub phone_e164: String,
     pub is_active: bool,
+    #[sqlx(default)]
+    pub yatra_years: Option<i32>,
+    #[sqlx(default)]
+    pub photo_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]

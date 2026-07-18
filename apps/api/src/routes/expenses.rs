@@ -193,7 +193,7 @@ async fn balances(
             GROUP BY es.member_id
         )
         SELECT tm.id AS member_id, u.display_name,
-               COALESCE(p.paid, 0) - COALESCE(o.share, 0) AS net_paise
+               (COALESCE(p.paid, 0) - COALESCE(o.share, 0))::bigint AS net_paise
         FROM trip_members tm
         JOIN users u ON u.id = tm.user_id
         LEFT JOIN paid p ON p.member_id = tm.id
